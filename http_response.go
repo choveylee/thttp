@@ -31,8 +31,6 @@ func (p *Response) ToBytes() (int, []byte, error) {
 	case "gzip":
 		reader, err = gzip.NewReader(p.Body)
 		if err != nil {
-			p.Body.Close()
-
 			return statusCode, nil, err
 		}
 	case "deflate":

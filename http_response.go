@@ -22,12 +22,17 @@ type Response struct {
 func (p *Response) ToBytes() (int, []byte, error) {
 	statusCode := p.StatusCode
 
+	defer p.Body.Close()
+
 	var reader io.ReadCloser
 	var err error
+
 	switch p.Header.Get("Content-Encoding") {
 	case "gzip":
 		reader, err = gzip.NewReader(p.Body)
 		if err != nil {
+			p.Body.Close()
+
 			return statusCode, nil, err
 		}
 	case "deflate":
@@ -36,7 +41,6 @@ func (p *Response) ToBytes() (int, []byte, error) {
 		reader = p.Body
 	}
 
-	defer p.Body.Close()
 	defer reader.Close()
 
 	body, err := io.ReadAll(reader)

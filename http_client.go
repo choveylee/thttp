@@ -51,6 +51,7 @@ const (
 	OptTransMaxConnsPerHost
 
 	OptTransUnsafeTls
+	OptTransTlsConfig
 
 	OptTransRetry
 	OptTransLog
@@ -274,22 +275,13 @@ func prepareTransport(options map[int]interface{}) (http.RoundTripper, error) {
 		}
 	}
 
-	srcUnsafeTls, ok := options[OptTransUnsafeTls]
+	srcTlsConfig, ok := options[OptTransTlsConfig]
 	if ok == true {
-		destUnsafeTls, ok := srcUnsafeTls.(bool)
+		destTlsConfig, ok := srcTlsConfig.(*tls.Config)
 		if ok == true {
-			unsafeTls := destUnsafeTls
-
-			tlsConfig := transport.TLSClientConfig
-
-			if tlsConfig == nil {
-				tlsConfig = &tls.Config{}
-				transport.TLSClientConfig = tlsConfig
-			}
-
-			tlsConfig.InsecureSkipVerify = unsafeTls
+			transport.TLSClientConfig = destTlsConfig
 		} else {
-			return nil, fmt.Errorf("unsafe tls type illegal, bool supported")
+			return nil, fmt.Errorf("tls config type illegal, tls config supported")
 		}
 	}
 

@@ -38,8 +38,10 @@ const (
 )
 
 const (
+	OptClientTimeout int = iota
+
 	// Transport Option
-	OptTransConnectTimeout int = iota
+	OptTransConnectTimeout
 	OptTransTimeout
 
 	OptTransProxyType
@@ -92,10 +94,6 @@ func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, strin
 
 func prepareTransport(options map[int]interface{}) (http.RoundTripper, error) {
 	transport := &http.Transport{
-		DialContext: defaultTransportDialContext(&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}),
 		ForceAttemptHTTP2: true,
 
 		MaxIdleConns:        100,
@@ -137,7 +135,7 @@ func prepareTransport(options map[int]interface{}) (http.RoundTripper, error) {
 		}
 	}
 
-	var connectTimeout time.Duration
+	connectTimeout := time.Second * 30
 
 	srcConnectTimeout, ok := options[OptTransConnectTimeout]
 	if ok == true {
@@ -154,7 +152,7 @@ func prepareTransport(options map[int]interface{}) (http.RoundTripper, error) {
 		}
 	}
 
-	var timeout time.Duration
+	timeout := time.Second * 30
 
 	srcTimeout, ok := options[OptTransTimeout]
 	if ok == true {
@@ -605,6 +603,25 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 		CheckRedirect: redirect,
 		Jar:           cookieJar,
 	}
+
+	timeout := time.Second * 30
+
+	srcTimeout, ok := options[OptClientTimeout]
+	if ok == true {
+		destTimeout, ok := srcTimeout.(time.Duration)
+		if ok == false {
+			destTimeout, ok := srcTimeout.(int)
+			if ok == true {
+				timeout = time.Duration(destTimeout) * time.Millisecond
+			} else {
+				return nil, fmt.Errorf("timeout type illegal, int supported")
+			}
+		} else {
+			timeout = destTimeout
+		}
+	}
+
+	client.Timeout = timeout
 
 	var bodyBytes []byte
 

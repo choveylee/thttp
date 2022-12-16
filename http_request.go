@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 type RequestOption struct {
@@ -47,14 +48,19 @@ func (p *RequestOption) WithOption(key int, val interface{}) *RequestOption {
 	return p
 }
 
+// WithTimeout timeout option
+func (p *RequestOption) WithTimeout(timeout time.Duration) *RequestOption {
+	return p.WithOption(OptTimeout, timeout)
+}
+
 // WithConnectTimeout connect timeout option
-func (p *RequestOption) WithConnectTimeout(timeout int) *RequestOption {
+func (p *RequestOption) WithConnectTimeout(timeout time.Duration) *RequestOption {
 	return p.WithOption(OptTransConnectTimeout, timeout)
 }
 
-// WithTimeout timeout option
-func (p *RequestOption) WithTimeout(timeout int) *RequestOption {
-	return p.WithOption(OptTransTimeout, timeout)
+// WithDeadlineTimeout timeout option
+func (p *RequestOption) WithDeadlineTimeout(timeout time.Duration) *RequestOption {
+	return p.WithOption(OptTransDeadlineTimeout, timeout)
 }
 
 // WithProxyType enum: TransProxyTypeHttp

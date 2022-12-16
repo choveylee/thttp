@@ -16,18 +16,25 @@ var Defaults = defaultClient.Defaults
 var Debug = defaultClient.Debug
 
 var WithOption = defaultClient.WithOption
-var WithConnectTimeout = defaultClient.WithConnectTimeout
+
 var WithTimeout = defaultClient.WithTimeout
+var WithConnectTimeout = defaultClient.WithConnectTimeout
+var WithDeadlineTimeout = defaultClient.WithDeadlineTimeout
+
 var WithProxyType = defaultClient.WithProxyType
 var WithProxyAddress = defaultClient.WithProxyAddress
 var WithProxyFunc = defaultClient.WithProxyFunc
 var WithUnsafeTls = defaultClient.WithUnsafeTls
+
 var WithRetryTransOption = defaultClient.WithRetryTransOption
 var WithLogTransOption = defaultClient.WithLogTransOption
+
 var WithCookieJar = defaultClient.WithCookieJar
 var WithRedirectPolicy = defaultClient.WithRedirectPolicy
+
 var WithRequestHookFunc = defaultClient.WithRequestHookFunc
 var WithResponseHookFunc = defaultClient.WithResponseHookFunc
+
 var WithOptions = defaultClient.WithOptions
 
 var WithHeader = defaultClient.WithHeader

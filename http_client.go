@@ -618,7 +618,8 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	if body != nil {
 		bodyBytes, _ = io.ReadAll(body)
 
-		body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		// body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		body = bytes.NewReader(bodyBytes)
 	}
 
 	request, err := prepareRequest(ctx, method, url, headers, body)

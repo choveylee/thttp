@@ -43,6 +43,11 @@ func (p *RequestOption) WithOption(key int, val interface{}) *RequestOption {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 
+	_, ok := OptTransports[key]
+	if ok == true {
+		return p
+	}
+
 	p.Options[key] = val
 
 	return p

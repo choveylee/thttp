@@ -70,6 +70,40 @@ const (
 	OptExtraResponseHookFunc
 )
 
+var (
+	OptTransports = map[int]int{
+		OptTransConnectTimeout:  OptTransConnectTimeout,
+		OptTransDeadlineTimeout: OptTransDeadlineTimeout,
+
+		OptTransProxyType: OptTransProxyType,
+		OptTransProxyAddr: OptTransProxyAddr,
+		OptTransProxyFunc: OptTransProxyFunc,
+
+		OptTransMaxIdleConns:        OptTransMaxIdleConns,
+		OptTransMaxIdleConnsPerHost: OptTransMaxIdleConnsPerHost,
+		OptTransMaxConnsPerHost:     OptTransMaxConnsPerHost,
+
+		OptTransUnsafeTls: OptTransUnsafeTls,
+		OptTransTlsConfig: OptTransTlsConfig,
+	}
+)
+
+var defaultTransport = &http.Transport{
+	DialContext: defaultTransportDialContext(&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}),
+
+	ForceAttemptHTTP2: true,
+
+	MaxIdleConns:    100,
+	IdleConnTimeout: 90 * time.Second,
+
+	TLSHandshakeTimeout: 10 * time.Second,
+
+	ExpectContinueTimeout: 1 * time.Second,
+}
+
 type ProxyFunc func(*http.Request) (int, string, error)
 type RedirectPolicyFunc func(*http.Request, []*http.Request) error
 type RequestHookFunc func(*http.Client, *http.Request)
@@ -92,187 +126,7 @@ func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, strin
 	return dialer.DialContext
 }
 
-func prepareTransport(options map[int]interface{}) (http.RoundTripper, error) {
-	transport := &http.Transport{
-		ForceAttemptHTTP2: true,
-
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 50,
-		MaxConnsPerHost:     200,
-
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-
-	srcMaxIdleConns, ok := options[OptTransMaxIdleConns]
-	if ok == true {
-		destMaxIdleConns, ok := srcMaxIdleConns.(int)
-		if ok == true {
-			transport.MaxIdleConns = destMaxIdleConns
-		} else {
-			return nil, fmt.Errorf("max idle conns type illegal, int supported")
-		}
-	}
-
-	srcMaxIdleConnsPerHost, ok := options[OptTransMaxIdleConnsPerHost]
-	if ok == true {
-		destMaxIdleConnsPerHost, ok := srcMaxIdleConnsPerHost.(int)
-		if ok == true {
-			transport.MaxIdleConnsPerHost = destMaxIdleConnsPerHost
-		} else {
-			return nil, fmt.Errorf("max idle conns per host type illegal, int supported")
-		}
-	}
-
-	srcMaxConnsPerHost, ok := options[OptTransMaxConnsPerHost]
-	if ok == true {
-		destMaxConnsPerHost, ok := srcMaxConnsPerHost.(int)
-		if ok == true {
-			transport.MaxConnsPerHost = destMaxConnsPerHost
-		} else {
-			return nil, fmt.Errorf("max conns per host type illegal, int supported")
-		}
-	}
-
-	connectTimeout := time.Second * 30
-
-	srcConnectTimeout, ok := options[OptTransConnectTimeout]
-	if ok == true {
-		destConnectTimeout, ok := srcConnectTimeout.(time.Duration)
-		if ok == false {
-			return nil, fmt.Errorf("connect timeout type illegal, time.duration supported")
-		} else {
-			connectTimeout = destConnectTimeout
-		}
-	}
-
-	deadlineTimeout := time.Second * 30
-
-	srcDeadlineTimeout, ok := options[OptTransDeadlineTimeout]
-	if ok == true {
-		destDeadlineTimeout, ok := srcDeadlineTimeout.(time.Duration)
-		if ok == false {
-			return nil, fmt.Errorf("timeout type illegal, time.duration supported")
-		} else {
-			deadlineTimeout = destDeadlineTimeout
-		}
-	}
-
-	// fix connect timeout (important, or it might cause a long time wait during connection)
-	if deadlineTimeout > 0 && (connectTimeout > deadlineTimeout || connectTimeout == 0) {
-		connectTimeout = deadlineTimeout
-	}
-
-	transport.DialContext = func(ctx context.Context, network string, addr string) (net.Conn, error) {
-		var conn net.Conn
-		var err error
-
-		if connectTimeout > 0 {
-			conn, err = net.DialTimeout(network, addr, connectTimeout)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			conn, err = net.Dial(network, addr)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		if deadlineTimeout > 0 {
-			err := conn.SetDeadline(time.Now().Add(deadlineTimeout))
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		return conn, nil
-	}
-
-	// proxy
-	srcProxyFunc, ok := options[OptTransProxyFunc]
-
-	if ok == true {
-		destProxyFunc, ok := srcProxyFunc.(func(*http.Request) (int, string, error))
-		if ok == true {
-			proxyFunc := destProxyFunc
-
-			transport.Proxy = func(req *http.Request) (*_url.URL, error) {
-				proxyType, proxy, err := proxyFunc(req)
-				if err != nil {
-					return nil, err
-				}
-
-				if proxyType != TransProxyTypeHttp {
-					return nil, fmt.Errorf("only proxy http supported")
-				}
-
-				if strings.Contains(proxy, "://") == false {
-					proxy = "http://" + proxy
-				}
-
-				proxyUrl, err := _url.Parse(proxy)
-				if err != nil {
-					return nil, err
-				}
-
-				return proxyUrl, nil
-			}
-		} else {
-			return nil, fmt.Errorf("proxy func type illegal")
-		}
-	} else {
-		var proxyType int
-
-		srcProxyType, ok := options[OptTransProxyType]
-		if ok == true {
-			destProxyType, ok := srcProxyType.(int)
-			if ok == true {
-				proxyType = destProxyType
-
-				if proxyType != TransProxyTypeHttp {
-					return nil, fmt.Errorf("only proxy http supported")
-				}
-			} else {
-				return nil, fmt.Errorf("proxy type illegal, int supported")
-			}
-		}
-
-		var proxy string
-
-		srcProxy, ok := options[OptTransProxyAddr]
-		if ok == true {
-			destProxy, ok := srcProxy.(string)
-			if ok == true {
-				proxy = destProxy
-
-				if strings.Contains(proxy, "://") == false {
-					proxy = "http://" + proxy
-				}
-
-				proxyUrl, err := _url.Parse(proxy)
-				if err != nil {
-					return nil, err
-				}
-
-				transport.Proxy = http.ProxyURL(proxyUrl)
-			} else {
-				return nil, fmt.Errorf("proxy type illegal, string supported")
-			}
-		}
-	}
-
-	srcTlsConfig, ok := options[OptTransTlsConfig]
-	if ok == true {
-		destTlsConfig, ok := srcTlsConfig.(*tls.Config)
-		if ok == true {
-			transport.TLSClientConfig = destTlsConfig
-		} else {
-			return nil, fmt.Errorf("tls config type illegal, tls config supported")
-		}
-	}
-
+func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (http.RoundTripper, error) {
 	// add retry transport
 	retryTransOption := defaultRetryTransOption
 
@@ -359,14 +213,17 @@ type HttpClient struct {
 	headers map[string]string
 
 	// Global transport of this client
-	transport http.RoundTripper
+	transport *http.Transport
+
+	connectTimeout  time.Duration
+	deadlineTimeout time.Duration
 
 	// Global cookie cookieJar of this client
 	cookieJar http.CookieJar
 
 	withDebug bool
 
-	lock *sync.Mutex
+	sync.RWMutex
 }
 
 func NewHttpClient() *HttpClient {
@@ -374,9 +231,10 @@ func NewHttpClient() *HttpClient {
 		options: make(map[int]interface{}),
 		headers: make(map[string]string),
 
-		transport: &http.Transport{},
+		transport: defaultTransport,
 
-		lock: &sync.Mutex{},
+		connectTimeout:  30 * time.Second,
+		deadlineTimeout: 30 * time.Second,
 	}
 
 	cookieJar, err := cookiejar.New(nil)
@@ -388,8 +246,8 @@ func NewHttpClient() *HttpClient {
 }
 
 func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]string) *HttpClient {
-	p.lock.Lock()
-	defer p.lock.Unlock()
+	p.Lock()
+	defer p.Unlock()
 
 	// merge options
 	if p.options != nil {
@@ -409,8 +267,8 @@ func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]st
 }
 
 func (p *HttpClient) Debug(val bool) *HttpClient {
-	p.lock.Lock()
-	defer p.lock.Unlock()
+	p.Lock()
+	defer p.Unlock()
 
 	p.withDebug = val
 
@@ -418,17 +276,210 @@ func (p *HttpClient) Debug(val bool) *HttpClient {
 }
 
 func (p *HttpClient) Transport() http.RoundTripper {
-	p.lock.Lock()
-	defer p.lock.Lock()
+	p.Lock()
+	defer p.Lock()
 
 	return p.transport
 }
 
-func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
-	p.lock.Lock()
-	defer p.lock.Unlock()
+func (p *HttpClient) resetTransport(key int, val interface{}) error {
+	if key == OptTransMaxIdleConns {
+		destMaxIdleConns, ok := val.(int)
+		if ok == true {
+			p.transport.MaxIdleConns = destMaxIdleConns
 
-	p.options[key] = val
+			return nil
+		} else {
+			return fmt.Errorf("max idle conns type illegal, int supported")
+		}
+	}
+
+	if key == OptTransMaxIdleConnsPerHost {
+		destMaxIdleConnsPerHost, ok := val.(int)
+		if ok == true {
+			p.transport.MaxIdleConnsPerHost = destMaxIdleConnsPerHost
+
+			return nil
+		} else {
+			return fmt.Errorf("max idle conns per host type illegal, int supported")
+		}
+	}
+
+	if key == OptTransMaxConnsPerHost {
+		destMaxConnsPerHost, ok := val.(int)
+		if ok == true {
+			p.transport.MaxConnsPerHost = destMaxConnsPerHost
+
+			return nil
+		} else {
+			return fmt.Errorf("max conns per host type illegal, int supported")
+		}
+	}
+
+	if key == OptTransConnectTimeout || key == OptTransDeadlineTimeout {
+		if key == OptTransConnectTimeout {
+			destConnectTimeout, ok := val.(time.Duration)
+			if ok == false {
+				destConnectTimeout, ok := val.(int)
+				if ok == true {
+					p.connectTimeout = time.Duration(destConnectTimeout) * time.Millisecond
+				} else {
+					return fmt.Errorf("connect timeout type illegal, int supported")
+				}
+			} else {
+				p.connectTimeout = destConnectTimeout
+			}
+		}
+
+		if key == OptTransDeadlineTimeout {
+			destTimeout, ok := val.(time.Duration)
+			if ok == false {
+				destTimeout, ok := val.(int)
+				if ok == true {
+					p.deadlineTimeout = time.Duration(destTimeout) * time.Millisecond
+				} else {
+					return fmt.Errorf("timeout type illegal, int supported")
+				}
+			} else {
+				p.deadlineTimeout = destTimeout
+			}
+		}
+
+		// fix connect timeout (important, or it might cause a long time wait during connection)
+		if p.deadlineTimeout > 0 && (p.connectTimeout > p.deadlineTimeout || p.connectTimeout == 0) {
+			p.connectTimeout = p.deadlineTimeout
+		}
+
+		p.transport.DialContext = func(ctx context.Context, network string, addr string) (net.Conn, error) {
+			var conn net.Conn
+			var err error
+
+			if p.connectTimeout > 0 {
+				conn, err = net.DialTimeout(network, addr, p.connectTimeout)
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				conn, err = net.Dial(network, addr)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			conn.SetDeadline(time.Now().Add(p.deadlineTimeout))
+
+			return conn, nil
+		}
+	}
+
+	// proxy
+	if key == OptTransProxyFunc {
+		destProxyFunc, ok := val.(func(*http.Request) (int, string, error))
+		if ok == true {
+			proxyFunc := destProxyFunc
+
+			p.transport.Proxy = func(req *http.Request) (*_url.URL, error) {
+				proxyType, proxy, err := proxyFunc(req)
+				if err != nil {
+					return nil, err
+				}
+
+				if proxyType != TransProxyTypeHttp {
+					return nil, fmt.Errorf("only proxy http supported")
+				}
+
+				if strings.Contains(proxy, "://") == false {
+					proxy = "http://" + proxy
+				}
+
+				proxyUrl, err := _url.Parse(proxy)
+				if err != nil {
+					return nil, err
+				}
+
+				return proxyUrl, nil
+			}
+
+			return nil
+		} else {
+			return fmt.Errorf("proxy func type illegal")
+		}
+	} else {
+		var proxyType int
+
+		if key == OptTransProxyType {
+			destProxyType, ok := val.(int)
+			if ok == true {
+				proxyType = destProxyType
+
+				if proxyType != TransProxyTypeHttp {
+					return fmt.Errorf("only proxy http supported")
+				}
+
+				return nil
+			} else {
+				return fmt.Errorf("proxy type illegal, int supported")
+			}
+		}
+
+		var proxy string
+
+		if key == OptTransProxyAddr {
+			destProxy, ok := val.(string)
+			if ok == true {
+				proxy = destProxy
+
+				if strings.Contains(proxy, "://") == false {
+					proxy = "http://" + proxy
+				}
+
+				proxyUrl, err := _url.Parse(proxy)
+				if err != nil {
+					return err
+				}
+
+				p.transport.Proxy = http.ProxyURL(proxyUrl)
+
+				return nil
+			} else {
+				return fmt.Errorf("proxy type illegal, string supported")
+			}
+		}
+	}
+
+	if key == OptTransUnsafeTls {
+		destUnsafeTls, ok := val.(bool)
+		if ok == true {
+			unsafeTls := destUnsafeTls
+
+			tlsConfig := p.transport.TLSClientConfig
+
+			if tlsConfig == nil {
+				tlsConfig = &tls.Config{}
+				p.transport.TLSClientConfig = tlsConfig
+			}
+
+			tlsConfig.InsecureSkipVerify = unsafeTls
+
+			return nil
+		} else {
+			return fmt.Errorf("unsafe tls type illegal, bool supported")
+		}
+	}
+
+	return nil
+}
+
+func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
+	p.Lock()
+	defer p.Unlock()
+
+	_, ok := OptTransports[key]
+	if ok == true {
+		p.resetTransport(key, val)
+	} else {
+		p.options[key] = val
+	}
 
 	return p
 }
@@ -507,8 +558,8 @@ func (p *HttpClient) WithOptions(options map[int]interface{}) *HttpClient {
 }
 
 func (p *HttpClient) WithHeader(key string, val string) *HttpClient {
-	p.lock.Lock()
-	defer p.lock.Unlock()
+	p.Lock()
+	defer p.Unlock()
 
 	p.headers[strings.ToLower(key)] = val
 
@@ -536,7 +587,7 @@ func (p *HttpClient) WithHeaders(headers map[string]string) *HttpClient {
 }
 
 func (p *HttpClient) Do(ctx context.Context, method string, url string, requestOption *RequestOption, body io.Reader) (*Response, error) {
-	p.lock.Lock()
+	p.Lock()
 
 	// prepare all request configs
 	// merge options
@@ -566,7 +617,10 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	}
 
 	// unlock
-	p.lock.Unlock()
+	p.Unlock()
+
+	p.RLock()
+	defer p.RUnlock()
 
 	// set cookies
 	cookies := make([]*http.Cookie, 0)
@@ -576,7 +630,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	}
 
 	// transport
-	transport, err := prepareTransport(options)
+	transport, err := wrapTransport(p.transport, options)
 	if err != nil {
 		return nil, err
 	}

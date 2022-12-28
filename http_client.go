@@ -587,7 +587,8 @@ func (p *HttpClient) WithHeaders(headers map[string]string) *HttpClient {
 }
 
 func (p *HttpClient) Do(ctx context.Context, method string, url string, requestOption *RequestOption, body io.Reader) (*Response, error) {
-	p.Lock()
+	p.RLock()
+	defer p.RUnlock()
 
 	// prepare all request configs
 	// merge options
@@ -615,12 +616,6 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 			headers[key] = val
 		}
 	}
-
-	// unlock
-	p.Unlock()
-
-	p.RLock()
-	defer p.RUnlock()
 
 	// set cookies
 	cookies := make([]*http.Cookie, 0)

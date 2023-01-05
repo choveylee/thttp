@@ -22,7 +22,7 @@ type RequestOption struct {
 
 	Cookies []*http.Cookie
 
-	lock *sync.Mutex
+	sync.Mutex
 }
 
 func NewRequestOption() *RequestOption {
@@ -32,16 +32,14 @@ func NewRequestOption() *RequestOption {
 		Headers: make(map[string]string),
 
 		Cookies: make([]*http.Cookie, 0),
-
-		lock: &sync.Mutex{},
 	}
 
 	return requestOption
 }
 
 func (p *RequestOption) WithOption(key int, val interface{}) *RequestOption {
-	p.lock.Lock()
-	defer p.lock.Unlock()
+	p.Lock()
+	defer p.Unlock()
 
 	_, ok := OptTransports[key]
 	if ok == true {
@@ -127,8 +125,8 @@ func (p *RequestOption) WithOptions(options map[int]interface{}) *RequestOption 
 }
 
 func (p *RequestOption) WithHeader(key string, val string) *RequestOption {
-	p.lock.Lock()
-	defer p.lock.Unlock()
+	p.Lock()
+	defer p.Unlock()
 
 	p.Headers[strings.ToLower(key)] = val
 
@@ -156,8 +154,8 @@ func (p *RequestOption) WithHeaders(headers map[string]string) *RequestOption {
 }
 
 func (p *RequestOption) WithCookie(cookie *http.Cookie) *RequestOption {
-	p.lock.Lock()
-	defer p.lock.Unlock()
+	p.Lock()
+	defer p.Unlock()
 
 	p.Cookies = append(p.Cookies, cookie)
 
@@ -165,8 +163,8 @@ func (p *RequestOption) WithCookie(cookie *http.Cookie) *RequestOption {
 }
 
 func (p *RequestOption) WithCookies(cookies ...*http.Cookie) *RequestOption {
-	p.lock.Lock()
-	defer p.lock.Unlock()
+	p.Lock()
+	defer p.Unlock()
 
 	p.Cookies = append(p.Cookies, cookies...)
 

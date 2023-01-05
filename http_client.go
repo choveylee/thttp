@@ -753,7 +753,15 @@ func (p *HttpClient) send(ctx context.Context, method string, url string, reques
 }
 
 func (p *HttpClient) sendJson(ctx context.Context, method string, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
-	p.WithContentType(ContentTypeApplicationJson)
+	if requestOption != nil {
+		requestOption = NewRequestOption()
+	}
+
+	requestOption.Lock()
+
+	requestOption.WithContentType(ContentTypeApplicationJson)
+
+	requestOption.Unlock()
 
 	var body io.Reader
 

@@ -94,7 +94,7 @@ func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if latency > p.logTransOption.slowLatency {
 				tlog.I(req.Context()).Err(err).Detailf("req.method: %s", req.Method).
 					Detailf("req.host: %s", req.Host).Detailf("req.url: %s", req.URL.String()).
-					Detailf("latency", latency).Msg("slow log")
+					Detailf("latency: %d", latency).Msg("slow log")
 			}
 		}
 	}
@@ -103,7 +103,7 @@ func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if p.logTransOption.enableAccessLog == true {
 		event := tlog.I(req.Context()).Err(err).Detailf("req.method: %s", req.Method).
 			Detailf("req.host: %s", req.Host).Detailf("req.url: %s", req.URL.String()).
-			Detailf("latency", latency)
+			Detailf("latency: %d", latency)
 
 		if p.logTransOption.includeHeaders == true {
 			for key, vals := range req.Header {

@@ -129,21 +129,6 @@ func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, strin
 }
 
 func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (http.RoundTripper, error) {
-	// add retry transport
-	retryTransOption := defaultRetryTransOption
-
-	srcRetryTransOption, ok := options[OptTransRetry]
-	if ok == true {
-		desRetryTransOption, ok := srcRetryTransOption.(*RetryTransOption)
-		if ok == true {
-			retryTransOption = desRetryTransOption
-		} else {
-			return nil, fmt.Errorf("retry trans option type illegal")
-		}
-	}
-
-	retryTransport := wrapRetryTransport(transport, retryTransOption)
-
 	// add log transport
 	logTransOption := defaultLogTransOption
 
@@ -157,9 +142,20 @@ func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (ht
 		}
 	}
 
-	logTransport := wrapLogTransport(retryTransport, logTransOption)
+	desTransport := wrapLogTransport(transport, logTransOption)
 
-	return logTransport, nil
+	// add retry transport
+	srcRetryTransOption, ok := options[OptTransRetry]
+	if ok == true {
+		desRetryTransOption, ok := srcRetryTransOption.(*RetryTransOption)
+		if ok == true {
+			desTransport = wrapRetryTransport(desTransport, desRetryTransOption)
+		} else {
+			return nil, fmt.Errorf("retry trans option type illegal")
+		}
+	}
+
+	return desTransport, nil
 }
 
 func prepareCookieJar(options map[int]interface{}) (http.CookieJar, error) {

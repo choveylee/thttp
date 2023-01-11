@@ -86,7 +86,7 @@ func (p *RetryTransOption) WithRetryError(retryErrorFunc RetryErrorFunc) *RetryT
 	return p
 }
 
-var defaultRetryTransOption = &RetryTransOption{
+var DefaultRetryTransOption = &RetryTransOption{
 	retryMaxCount:    DefaultRetryMaxCount,
 	retryMinWaitTime: DefaultRetryMinWaitTime,
 	retryMaxWaitTime: DefaultRetryMaxWaitTime,

@@ -88,20 +88,22 @@ var (
 	}
 )
 
-var defaultTransport = &http.Transport{
-	DialContext: defaultTransportDialContext(&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}),
+func newDefaultTransport() *http.Transport {
+	return &http.Transport{
+		DialContext: defaultTransportDialContext(&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}),
 
-	ForceAttemptHTTP2: true,
+		ForceAttemptHTTP2: true,
 
-	MaxIdleConns:    100,
-	IdleConnTimeout: 90 * time.Second,
+		MaxIdleConns:    100,
+		IdleConnTimeout: 90 * time.Second,
 
-	TLSHandshakeTimeout: 10 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
 
-	ExpectContinueTimeout: 1 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 }
 
 type ProxyFunc func(*http.Request) (int, string, error)
@@ -231,7 +233,7 @@ func NewHttpClient() *HttpClient {
 		options: make(map[int]interface{}),
 		headers: make(map[string]string),
 
-		transport: defaultTransport,
+		transport: newDefaultTransport(),
 
 		connectTimeout:  30 * time.Second,
 		deadlineTimeout: 30 * time.Second,

@@ -866,8 +866,7 @@ func (p *HttpClient) PostMultipart(ctx context.Context, url string, requestOptio
 		requestOption = NewRequestOption()
 	}
 
-	requestOption.WithContentType(writer.FormDataContentType()
-
+	requestOption.WithContentType(writer.FormDataContentType())
 
 	err := writer.Close()
 	if err != nil {

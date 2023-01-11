@@ -467,6 +467,15 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 		}
 	}
 
+	if key == OptTransTlsConfig {
+		destTlsConfig, ok := val.(*tls.Config)
+		if ok == true {
+			p.transport.TLSClientConfig = destTlsConfig
+		} else {
+			return fmt.Errorf("tls config type illegal, tls config supported")
+		}
+	}
+
 	return nil
 }
 

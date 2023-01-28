@@ -31,21 +31,13 @@ import (
 )
 
 const (
-	TransProxyTypeHttp int = iota
-	TransProxyTypeSocks4
-	TransProxyTypeSocks5
-	TransProxyTypeSocks4A
-)
-
-const (
 	OptTimeout int = iota
 
 	// Transport Option
 	OptTransConnectTimeout
 	OptTransDeadlineTimeout
 
-	OptTransProxyType
-	OptTransProxyAddr
+	OptTransProxyUrl
 	OptTransProxyFunc
 
 	OptTransMaxIdleConns
@@ -75,8 +67,7 @@ var (
 		OptTransConnectTimeout:  OptTransConnectTimeout,
 		OptTransDeadlineTimeout: OptTransDeadlineTimeout,
 
-		OptTransProxyType: OptTransProxyType,
-		OptTransProxyAddr: OptTransProxyAddr,
+		OptTransProxyUrl:  OptTransProxyUrl,
 		OptTransProxyFunc: OptTransProxyFunc,
 
 		OptTransMaxIdleConns:        OptTransMaxIdleConns,
@@ -372,76 +363,33 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 	// proxy
 	if key == OptTransProxyFunc {
-		destProxyFunc, ok := val.(func(*http.Request) (int, string, error))
+		destProxyFunc, ok := val.(func(*http.Request) (*_url.URL, error))
 		if ok == true {
 			proxyFunc := destProxyFunc
 
-			p.transport.Proxy = func(req *http.Request) (*_url.URL, error) {
-				proxyType, proxy, err := proxyFunc(req)
-				if err != nil {
-					return nil, err
-				}
-
-				if proxyType != TransProxyTypeHttp {
-					return nil, fmt.Errorf("only proxy http supported")
-				}
-
-				if strings.Contains(proxy, "://") == false {
-					proxy = "http://" + proxy
-				}
-
-				proxyUrl, err := _url.Parse(proxy)
-				if err != nil {
-					return nil, err
-				}
-
-				return proxyUrl, nil
-			}
-
-			return nil
+			p.transport.Proxy = proxyFunc
 		} else {
 			return fmt.Errorf("proxy func type illegal")
 		}
-	} else {
-		var proxyType int
+	} else if key == OptTransProxyUrl {
+		destProxy, ok := val.(string)
+		if ok == true {
+			proxy := destProxy
 
-		if key == OptTransProxyType {
-			destProxyType, ok := val.(int)
-			if ok == true {
-				proxyType = destProxyType
-
-				if proxyType != TransProxyTypeHttp {
-					return fmt.Errorf("only proxy http supported")
-				}
-
-				return nil
-			} else {
-				return fmt.Errorf("proxy type illegal, int supported")
+			if strings.Contains(proxy, "://") == false {
+				proxy = "http://" + proxy
 			}
-		}
 
-		var proxy string
-
-		if key == OptTransProxyAddr {
-			destProxy, ok := val.(string)
-			if ok == true {
-				proxy = destProxy
-
-				if strings.Contains(proxy, "://") == false {
-					proxy = "http://" + proxy
-				}
-
-				proxyUrl, err := _url.Parse(proxy)
-				if err != nil {
-					return err
-				}
-
-				p.transport.Proxy = http.ProxyURL(proxyUrl)
-
-				return nil
-			} else {
-				return fmt.Errorf("proxy type illegal, string supported")
+			proxyUrl, err := _url.Parse(proxy)
+			if err != nil {
+				return err
 			}
+
+			p.transport.Proxy = http.ProxyURL(proxyUrl)
+
+			return nil
+		} else {
+			return fmt.Errorf("proxy type illegal, string supported")
 		}
 	}
 
@@ -506,14 +454,9 @@ func (p *HttpClient) WithDeadlineTimeout(timeout time.Duration) *HttpClient {
 	return p.WithOption(OptTransConnectTimeout, timeout)
 }
 
-// WithProxyType TransProxyTypeHttp
-func (p *HttpClient) WithProxyType(proxyType int) *HttpClient {
-	return p.WithOption(OptTransProxyType, proxyType)
-}
-
-// WithProxyAddress proxy address: ip:port
-func (p *HttpClient) WithProxyAddress(addr string) *HttpClient {
-	return p.WithOption(OptTransProxyAddr, addr)
+// WithProxyUrl proxy address: ip:port
+func (p *HttpClient) WithProxyUrl(addr string) *HttpClient {
+	return p.WithOption(OptTransProxyUrl, addr)
 }
 
 // WithProxyFunc proxy func

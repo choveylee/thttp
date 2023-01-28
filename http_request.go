@@ -56,36 +56,6 @@ func (p *RequestOption) WithTimeout(timeout time.Duration) *RequestOption {
 	return p.WithOption(OptTimeout, timeout)
 }
 
-// WithConnectTimeout connect timeout option
-func (p *RequestOption) WithConnectTimeout(timeout time.Duration) *RequestOption {
-	return p.WithOption(OptTransConnectTimeout, timeout)
-}
-
-// WithDeadlineTimeout timeout option
-func (p *RequestOption) WithDeadlineTimeout(timeout time.Duration) *RequestOption {
-	return p.WithOption(OptTransDeadlineTimeout, timeout)
-}
-
-// WithProxyType enum: TransProxyTypeHttp
-func (p *RequestOption) WithProxyType(proxyType int) *RequestOption {
-	return p.WithOption(OptTransProxyType, proxyType)
-}
-
-// WithProxyAddress proxy address: ip:port
-func (p *RequestOption) WithProxyAddress(addr string) *RequestOption {
-	return p.WithOption(OptTransProxyAddr, addr)
-}
-
-// WithProxyFunc proxy func
-func (p *RequestOption) WithProxyFunc(option ProxyFunc) *RequestOption {
-	return p.WithOption(OptTransProxyFunc, option)
-}
-
-// WithUnsafeTls https TLS
-func (p *RequestOption) WithUnsafeTls(unsafe bool) *RequestOption {
-	return p.WithOption(OptTransUnsafeTls, unsafe)
-}
-
 // WithRetryTransOption retry trans option
 func (p *RequestOption) WithRetryTransOption(option *RetryTransOption) *RequestOption {
 	return p.WithOption(OptTransRetry, option)

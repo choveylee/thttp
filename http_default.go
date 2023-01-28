@@ -21,8 +21,7 @@ var WithTimeout = defaultClient.WithTimeout
 var WithConnectTimeout = defaultClient.WithConnectTimeout
 var WithDeadlineTimeout = defaultClient.WithDeadlineTimeout
 
-var WithProxyType = defaultClient.WithProxyType
-var WithProxyAddress = defaultClient.WithProxyAddress
+var WithProxyUrl = defaultClient.WithProxyUrl
 var WithProxyFunc = defaultClient.WithProxyFunc
 var WithUnsafeTls = defaultClient.WithUnsafeTls
 

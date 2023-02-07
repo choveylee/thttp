@@ -703,7 +703,7 @@ func (p *HttpClient) send(ctx context.Context, method string, url string, reques
 }
 
 func (p *HttpClient) sendJson(ctx context.Context, method string, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
-	if requestOption != nil {
+	if requestOption == nil {
 		requestOption = NewRequestOption()
 	}
 

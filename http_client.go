@@ -33,10 +33,6 @@ import (
 const (
 	OptTimeout int = iota
 
-	// Transport Option
-	OptTransConnectTimeout
-	OptTransDeadlineTimeout
-
 	OptTransProxyUrl
 	OptTransProxyFunc
 
@@ -64,9 +60,6 @@ const (
 
 var (
 	OptTransports = map[int]int{
-		OptTransConnectTimeout:  OptTransConnectTimeout,
-		OptTransDeadlineTimeout: OptTransDeadlineTimeout,
-
 		OptTransProxyUrl:  OptTransProxyUrl,
 		OptTransProxyFunc: OptTransProxyFunc,
 
@@ -305,62 +298,6 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 		}
 	}
 
-	if key == OptTransConnectTimeout || key == OptTransDeadlineTimeout {
-		if key == OptTransConnectTimeout {
-			destConnectTimeout, ok := val.(time.Duration)
-			if ok == false {
-				destConnectTimeout, ok := val.(int)
-				if ok == true {
-					p.connectTimeout = time.Duration(destConnectTimeout) * time.Millisecond
-				} else {
-					return fmt.Errorf("connect timeout type illegal, int supported")
-				}
-			} else {
-				p.connectTimeout = destConnectTimeout
-			}
-		}
-
-		if key == OptTransDeadlineTimeout {
-			destTimeout, ok := val.(time.Duration)
-			if ok == false {
-				destTimeout, ok := val.(int)
-				if ok == true {
-					p.deadlineTimeout = time.Duration(destTimeout) * time.Millisecond
-				} else {
-					return fmt.Errorf("timeout type illegal, int supported")
-				}
-			} else {
-				p.deadlineTimeout = destTimeout
-			}
-		}
-
-		// fix connect timeout (important, or it might cause a long time wait during connection)
-		if p.deadlineTimeout > 0 && (p.connectTimeout > p.deadlineTimeout || p.connectTimeout == 0) {
-			p.connectTimeout = p.deadlineTimeout
-		}
-
-		p.transport.DialContext = func(ctx context.Context, network string, addr string) (net.Conn, error) {
-			var conn net.Conn
-			var err error
-
-			if p.connectTimeout > 0 {
-				conn, err = net.DialTimeout(network, addr, p.connectTimeout)
-				if err != nil {
-					return nil, err
-				}
-			} else {
-				conn, err = net.Dial(network, addr)
-				if err != nil {
-					return nil, err
-				}
-			}
-
-			conn.SetDeadline(time.Now().Add(p.deadlineTimeout))
-
-			return conn, nil
-		}
-	}
-
 	// proxy
 	if key == OptTransProxyFunc {
 		destProxyFunc, ok := val.(func(*http.Request) (*_url.URL, error))
@@ -442,16 +379,6 @@ func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 // WithTimeout timeout option
 func (p *HttpClient) WithTimeout(timeout time.Duration) *HttpClient {
 	return p.WithOption(OptTimeout, timeout)
-}
-
-// WithConnectTimeout connect timeout option
-func (p *HttpClient) WithConnectTimeout(timeout time.Duration) *HttpClient {
-	return p.WithOption(OptTransConnectTimeout, timeout)
-}
-
-// WithDeadlineTimeout deadline timeout option
-func (p *HttpClient) WithDeadlineTimeout(timeout time.Duration) *HttpClient {
-	return p.WithOption(OptTransConnectTimeout, timeout)
 }
 
 // WithProxyUrl proxy address: ip:port

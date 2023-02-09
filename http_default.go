@@ -18,8 +18,6 @@ var Debug = defaultClient.Debug
 var WithOption = defaultClient.WithOption
 
 var WithTimeout = defaultClient.WithTimeout
-var WithConnectTimeout = defaultClient.WithConnectTimeout
-var WithDeadlineTimeout = defaultClient.WithDeadlineTimeout
 
 var WithProxyUrl = defaultClient.WithProxyUrl
 var WithProxyFunc = defaultClient.WithProxyFunc

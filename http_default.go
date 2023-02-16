@@ -48,7 +48,9 @@ var GetLen = defaultClient.GetLen
 
 var Post = defaultClient.Post
 var PostJson = defaultClient.PostJson
+
 var PostMultipart = defaultClient.PostMultipart
+var PostMultipartEx = defaultClient.PostMultipartEx
 
 var Put = defaultClient.Put
 var PutJson = defaultClient.PutJson

@@ -744,6 +744,48 @@ func (p *HttpClient) PostMultipart(ctx context.Context, url string, requestOptio
 	return p.Do(ctx, "POST", url, requestOption, body)
 }
 
+type FormData struct {
+	Key   string
+	Value string
+}
+
+// PostMultipartEx support data type: file - for aws s3 file upload bug
+func (p *HttpClient) PostMultipartEx(ctx context.Context, url string, requestOption *RequestOption, params []*FormData) (*Response, error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	for _, formData := range params {
+		key := formData.Key
+		value := formData.Value
+
+		// if value is file
+		if len(key) > 0 && key[0] == '@' {
+			err := loadFormFile(writer, key[1:], value)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			err := writer.WriteField(key, value)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	if requestOption == nil {
+		requestOption = NewRequestOption()
+	}
+
+	requestOption.WithContentType(writer.FormDataContentType())
+
+	err := writer.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	return p.Do(ctx, "POST", url, requestOption, body)
+}
+
 func (p *HttpClient) Put(ctx context.Context, url string, requestOption *RequestOption, params []byte) (*Response, error) {
 	return p.send(ctx, "PUT", url, requestOption, params)
 }

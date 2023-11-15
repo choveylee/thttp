@@ -8,58 +8,153 @@
 
 package thttp
 
+import (
+	"context"
+	"io"
+	"net/http"
+	_url "net/url"
+	"time"
+)
+
 // default client for convenience
 var defaultClient = NewHttpClient()
 
-var Defaults = defaultClient.Defaults
+func Defaults(options map[int]interface{}, headers map[string]string) *HttpClient {
+	return defaultClient.Defaults(options, headers)
+}
 
-var Debug = defaultClient.Debug
+func Debug(val bool) *HttpClient {
+	return defaultClient.Debug(val)
+}
 
-var WithOption = defaultClient.WithOption
+func WithOption(key int, val interface{}) *HttpClient {
+	return defaultClient.WithOption(key, val)
+}
 
-var WithTimeout = defaultClient.WithTimeout
+func WithTimeout(timeout time.Duration) *HttpClient {
+	return defaultClient.WithTimeout(timeout)
+}
 
-var WithProxyUrl = defaultClient.WithProxyUrl
-var WithProxyFunc = defaultClient.WithProxyFunc
-var WithUnsafeTls = defaultClient.WithUnsafeTls
+func WithProxyUrl(addr string) *HttpClient {
+	return defaultClient.WithProxyUrl(addr)
+}
 
-var WithRetryTransOption = defaultClient.WithRetryTransOption
-var WithLogTransOption = defaultClient.WithLogTransOption
+func WithProxyFunc(option ProxyFunc) *HttpClient {
+	return defaultClient.WithProxyFunc(option)
+}
 
-var WithCookieJar = defaultClient.WithCookieJar
-var WithRedirectPolicy = defaultClient.WithRedirectPolicy
+func WithUnsafeTls(unsafe bool) *HttpClient {
+	return defaultClient.WithUnsafeTls(unsafe)
+}
 
-var WithRequestHookFunc = defaultClient.WithRequestHookFunc
-var WithResponseHookFunc = defaultClient.WithResponseHookFunc
+func WithRetryTransOption(option *RetryTransOption) *HttpClient {
+	return defaultClient.WithRetryTransOption(option)
+}
 
-var WithOptions = defaultClient.WithOptions
+func WithLogTransOption(option *LogTransOption) *HttpClient {
+	return defaultClient.WithLogTransOption(option)
+}
 
-var WithHeader = defaultClient.WithHeader
-var WithReferer = defaultClient.WithReferer
-var WithUserAgent = defaultClient.WithUserAgent
-var WithContentType = defaultClient.WithContentType
-var WithHeaders = defaultClient.WithHeaders
+func WithCookieJar(jar http.CookieJar) *HttpClient {
+	return defaultClient.WithCookieJar(jar)
+}
 
-var Do = defaultClient.Do
+func WithRedirectPolicy(option RedirectPolicyFunc) *HttpClient {
+	return defaultClient.WithRedirectPolicy(option)
+}
 
-var Head = defaultClient.Head
-var Get = defaultClient.Get
-var GetLen = defaultClient.GetLen
+func WithRequestHookFunc(option RequestHookFunc) *HttpClient {
+	return defaultClient.WithRequestHookFunc(option)
+}
 
-var Post = defaultClient.Post
-var PostJson = defaultClient.PostJson
+func WithResponseHookFunc(option ResponseHookFunc) *HttpClient {
+	return defaultClient.WithResponseHookFunc(option)
+}
 
-var PostMultipart = defaultClient.PostMultipart
-var PostMultipartEx = defaultClient.PostMultipartEx
+func WithOptions(options map[int]interface{}) *HttpClient {
+	return defaultClient.WithOptions(options)
+}
 
-var Put = defaultClient.Put
-var PutJson = defaultClient.PutJson
+func WithHeader(key string, val string) *HttpClient {
+	return defaultClient.WithHeader(key, val)
+}
 
-var Patch = defaultClient.Patch
-var PatchJson = defaultClient.PatchJson
+func WithReferer(val string) *HttpClient {
+	return defaultClient.WithReferer(val)
+}
 
-var Delete = defaultClient.Delete
+func WithUserAgent(val string) *HttpClient {
+	return defaultClient.WithUserAgent(val)
+}
 
-var Options = defaultClient.Options
-var Connect = defaultClient.Connect
-var Trace = defaultClient.Trace
+func WithContentType(val string) *HttpClient {
+	return defaultClient.WithContentType(val)
+}
+
+func WithHeaders(headers map[string]string) *HttpClient {
+	return defaultClient.WithHeaders(headers)
+}
+
+func Do(ctx context.Context, method string, url string, requestOption *RequestOption, body io.Reader) (*Response, error) {
+	return defaultClient.Do(ctx, method, url, requestOption, body)
+}
+
+func Head(ctx context.Context, url string, requestOption *RequestOption) (*Response, error) {
+	return defaultClient.Head(ctx, url, requestOption)
+}
+
+func Get(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+	return defaultClient.Get(ctx, url, requestOption, params)
+}
+
+func GetLen(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (int64, error) {
+	return defaultClient.GetLen(ctx, url, requestOption, params)
+}
+
+func Post(ctx context.Context, url string, requestOption *RequestOption, params []byte) (*Response, error) {
+	return defaultClient.Post(ctx, url, requestOption, params)
+}
+
+func PostJson(ctx context.Context, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
+	return defaultClient.PostJson(ctx, url, requestOption, params)
+}
+
+func PostMultipart(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+	return defaultClient.PostMultipart(ctx, url, requestOption, params)
+}
+
+func PostMultipartEx(ctx context.Context, url string, requestOption *RequestOption, params []*FormData) (*Response, error) {
+	return defaultClient.PostMultipartEx(ctx, url, requestOption, params)
+}
+
+func Put(ctx context.Context, url string, requestOption *RequestOption, params []byte) (*Response, error) {
+	return defaultClient.Put(ctx, url, requestOption, params)
+}
+
+func PutJson(ctx context.Context, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
+	return defaultClient.PutJson(ctx, url, requestOption, params)
+}
+
+func Patch(ctx context.Context, url string, requestOption *RequestOption, params []byte) (*Response, error) {
+	return defaultClient.Patch(ctx, url, requestOption, params)
+}
+
+func PatchJson(ctx context.Context, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
+	return defaultClient.PatchJson(ctx, url, requestOption, params)
+}
+
+func Delete(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+	return defaultClient.Delete(ctx, url, requestOption, params)
+}
+
+func Options(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+	return defaultClient.Options(ctx, url, requestOption, params)
+}
+
+func Connect(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+	return defaultClient.Connect(ctx, url, requestOption, params)
+}
+
+func Trace(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+	return defaultClient.Trace(ctx, url, requestOption, params)
+}

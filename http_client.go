@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -24,8 +25,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/json-iterator/go"
 
 	"github.com/choveylee/tlog"
 )
@@ -145,7 +144,6 @@ func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (ht
 func prepareCookieJar(options map[int]interface{}) (http.CookieJar, error) {
 	srcOptCookieJar, ok := options[OptCookieJar]
 	if ok == true {
-		// is bool
 		optCookieJar, ok := srcOptCookieJar.(bool)
 		if ok == true {
 			// default cookieJar
@@ -368,7 +366,11 @@ func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 
 	_, ok := OptTransports[key]
 	if ok == true {
-		p.resetTransport(key, val)
+		err := p.resetTransport(key, val)
+		if err != nil {
+			tlog.E(context.Background()).Err(err).Msgf("reset transport err (%v).",
+				err)
+		}
 	} else {
 		p.options[key] = val
 	}
@@ -558,7 +560,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 		dump, err := httputil.DumpRequestOut(request, true)
 
 		if err == nil {
-			fmt.Printf("%s\n", dump)
+			tlog.I(ctx).Msgf("%s", dump)
 		}
 	}
 
@@ -648,7 +650,7 @@ func (p *HttpClient) sendJson(ctx context.Context, method string, url string, re
 	case *bytes.Reader:
 		body = retParams
 	default:
-		data, err := jsoniter.Marshal(retParams)
+		data, err := json.Marshal(retParams)
 		if err != nil {
 			return nil, err
 		}

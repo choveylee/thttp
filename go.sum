@@ -70,6 +70,8 @@ github.com/choveylee/tcfg v0.0.0-20221103045314-ced0f735691a h1:jcDCNUkVqxCW3Zi/
 github.com/choveylee/tcfg v0.0.0-20221103045314-ced0f735691a/go.mod h1:+OFAckFR3e1iYn3hurOEP1OeUQxulRAyO344ZqWFuGk=
 github.com/choveylee/tcfg v0.0.0-20230729073348-4dd6ded5b838 h1:jp7AyI2fUUjrrU5+9NLQJGtVgcrfJJdxpy3erHqgxX8=
 github.com/choveylee/tcfg v0.0.0-20230729073348-4dd6ded5b838/go.mod h1:Yo4aJ152DZ3S9qSRMdJ5qorGA/sM6OqQ9PGGMv7BLQ0=
+github.com/choveylee/tcfg v0.0.0-20231115020527-b8bdc45c86eb h1:TtRSl3uJmguuSxPRg/Kh3opHVsNAQTjVAv02Jm6N+0I=
+github.com/choveylee/tcfg v0.0.0-20231115020527-b8bdc45c86eb/go.mod h1:Yo4aJ152DZ3S9qSRMdJ5qorGA/sM6OqQ9PGGMv7BLQ0=
 github.com/choveylee/terror v0.0.0-20221103022350-a143f23edf47 h1:BtZRvVo/Cl6S/6VDTqDz6gmZJIuSlOdD91W6Px6WKf8=
 github.com/choveylee/terror v0.0.0-20221103022350-a143f23edf47/go.mod h1:zNbl1bYp6XxNRp2U1TzbywHlRA1hM0LwVOUaokoorwk=
 github.com/choveylee/terror v0.0.0-20221105132813-997ba58d0bf1 h1:0mm6Dlqj3Nb7emQO/gPR7TAglwNVBeZR4pE6k3Nwrgc=

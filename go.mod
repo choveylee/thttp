@@ -3,8 +3,8 @@ module github.com/choveylee/thttp
 go 1.19
 
 require (
-	github.com/choveylee/tlog v0.0.0-20231115064806-a1ec26572d92
-	github.com/choveylee/tmetric v0.0.0-20231114032854-482b13d9305e
+	github.com/choveylee/tlog v0.0.0-20231210115013-e9da4987a37c
+	github.com/choveylee/tmetric v0.0.0-20231210115317-3278400744b1
 )
 
 require (
@@ -14,9 +14,9 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/chenzhuoyu/base64x v0.0.0-20230717121745-296ad89f973d // indirect
 	github.com/chenzhuoyu/iasm v0.9.1 // indirect
-	github.com/choveylee/tcfg v0.0.0-20231115020527-b8bdc45c86eb // indirect
+	github.com/choveylee/tcfg v0.0.0-20231210122623-e0407bbfb272 // indirect
 	github.com/choveylee/terror v0.0.0-20221105132813-997ba58d0bf1 // indirect
-	github.com/choveylee/ttrace v0.0.0-20231210112538-25af50fda230 // indirect
+	github.com/choveylee/ttrace v0.0.0-20231210113425-070b459d201c // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
 	github.com/getsentry/sentry-go v0.25.0 // indirect

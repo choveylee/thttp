@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  http_response.go
- * @Version: 1.0.0
- * @Date: 2022/05/28 10:46
- */
-
 package thttp
 
 import (
@@ -15,10 +7,13 @@ import (
 	"net/http"
 )
 
+// Response wraps [http.Response] with helpers to read the body.
 type Response struct {
 	*http.Response
 }
 
+// ToBytes reads and decompresses the response body when Content-Encoding is gzip or deflate,
+// returns the HTTP status code, raw body bytes, and any read or decompression error.
 func (p *Response) ToBytes() (int, []byte, error) {
 	statusCode := p.StatusCode
 
@@ -49,6 +44,7 @@ func (p *Response) ToBytes() (int, []byte, error) {
 	return statusCode, body, nil
 }
 
+// ToString returns the response body as a UTF-8 string via [Response.ToBytes].
 func (p *Response) ToString() (int, string, error) {
 	statusCode, bytes, err := p.ToBytes()
 	if err != nil {

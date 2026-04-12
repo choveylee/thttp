@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  http_request.go
- * @Version: 1.0.0
- * @Date: 2022/06/05 11:49
- */
-
 package thttp
 
 import (
@@ -15,6 +7,7 @@ import (
 	"time"
 )
 
+// RequestOption carries per-request options, headers, and cookies merged with [HttpClient] defaults.
 type RequestOption struct {
 	Options map[int]interface{}
 
@@ -25,6 +18,7 @@ type RequestOption struct {
 	sync.Mutex
 }
 
+// NewRequestOption returns an empty [RequestOption] ready for configuration.
 func NewRequestOption() *RequestOption {
 	requestOption := &RequestOption{
 		Options: make(map[int]interface{}),
@@ -37,6 +31,7 @@ func NewRequestOption() *RequestOption {
 	return requestOption
 }
 
+// WithOption sets a per-request option. Keys listed in [OptTransports] are ignored (transport fields are client-wide).
 func (p *RequestOption) WithOption(key int, val interface{}) *RequestOption {
 	p.Lock()
 	defer p.Unlock()
@@ -51,41 +46,42 @@ func (p *RequestOption) WithOption(key int, val interface{}) *RequestOption {
 	return p
 }
 
-// WithTimeout timeout option
+// WithTimeout sets [OptTimeout] for this request only.
 func (p *RequestOption) WithTimeout(timeout time.Duration) *RequestOption {
 	return p.WithOption(OptTimeout, timeout)
 }
 
-// WithRetryTransOption retry trans option
+// WithRetryTransOption attaches retry behavior for this request ([OptTransRetry]).
 func (p *RequestOption) WithRetryTransOption(option *RetryTransOption) *RequestOption {
 	return p.WithOption(OptTransRetry, option)
 }
 
-// WithLogTransOption log trans option
+// WithLogTransOption attaches logging behavior for this request ([OptTransLog]).
 func (p *RequestOption) WithLogTransOption(option *LogTransOption) *RequestOption {
 	return p.WithOption(OptTransLog, option)
 }
 
-// WithCookieJar cookie jar
+// WithCookieJar sets the cookie jar for this request ([OptCookieJar]).
 func (p *RequestOption) WithCookieJar(jar http.CookieJar) *RequestOption {
 	return p.WithOption(OptCookieJar, jar)
 }
 
-// WithRedirectPolicy redirect policy
+// WithRedirectPolicy sets the redirect policy for this request ([OptRedirectPolicy]).
 func (p *RequestOption) WithRedirectPolicy(option RedirectPolicyFunc) *RequestOption {
 	return p.WithOption(OptRedirectPolicy, option)
 }
 
-// WithRequestHookFunc request hook func
+// WithRequestHookFunc registers a pre-request hook for this request ([OptExtraRequestHookFunc]).
 func (p *RequestOption) WithRequestHookFunc(option RequestHookFunc) *RequestOption {
 	return p.WithOption(OptExtraRequestHookFunc, option)
 }
 
-// WithResponseHookFunc response hook func
+// WithResponseHookFunc registers a post-request hook for this request ([OptExtraResponseHookFunc]).
 func (p *RequestOption) WithResponseHookFunc(option ResponseHookFunc) *RequestOption {
 	return p.WithOption(OptExtraResponseHookFunc, option)
 }
 
+// WithOptions merges multiple per-request options.
 func (p *RequestOption) WithOptions(options map[int]interface{}) *RequestOption {
 	for key, val := range options {
 		p.WithOption(key, val)
@@ -94,6 +90,7 @@ func (p *RequestOption) WithOptions(options map[int]interface{}) *RequestOption 
 	return p
 }
 
+// WithHeader sets a header for this request (key is stored in lowercase).
 func (p *RequestOption) WithHeader(key string, val string) *RequestOption {
 	p.Lock()
 	defer p.Unlock()
@@ -103,18 +100,22 @@ func (p *RequestOption) WithHeader(key string, val string) *RequestOption {
 	return p
 }
 
+// WithReferer sets the Referer header for this request.
 func (p *RequestOption) WithReferer(val string) *RequestOption {
 	return p.WithHeader("referer", val)
 }
 
+// WithUserAgent sets the User-Agent header for this request.
 func (p *RequestOption) WithUserAgent(val string) *RequestOption {
 	return p.WithHeader("user-agent", val)
 }
 
+// WithContentType sets the Content-Type header for this request.
 func (p *RequestOption) WithContentType(val string) *RequestOption {
 	return p.WithHeader("content-type", val)
 }
 
+// WithHeaders merges multiple headers for this request.
 func (p *RequestOption) WithHeaders(headers map[string]string) *RequestOption {
 	for key, val := range headers {
 		p.WithHeader(key, val)
@@ -123,6 +124,7 @@ func (p *RequestOption) WithHeaders(headers map[string]string) *RequestOption {
 	return p
 }
 
+// WithCookie appends a single cookie to the request.
 func (p *RequestOption) WithCookie(cookie *http.Cookie) *RequestOption {
 	p.Lock()
 	defer p.Unlock()
@@ -132,6 +134,7 @@ func (p *RequestOption) WithCookie(cookie *http.Cookie) *RequestOption {
 	return p
 }
 
+// WithCookies appends multiple cookies to the request.
 func (p *RequestOption) WithCookies(cookies ...*http.Cookie) *RequestOption {
 	p.Lock()
 	defer p.Unlock()

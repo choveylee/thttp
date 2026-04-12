@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  http_transport
- * @Version: 1.0.0
- * @Date: 2022/07/13 15:58
- */
-
 package thttp
 
 import (
@@ -17,6 +9,7 @@ import (
 	"github.com/choveylee/tlog"
 )
 
+// LogTransOption configures the logging [http.RoundTripper] wrapper applied when [OptTransLog] is set.
 type LogTransOption struct {
 	enableSlowLog  bool
 	ignoreNotFound bool
@@ -26,6 +19,7 @@ type LogTransOption struct {
 	includeHeaders  bool
 }
 
+// NewLogTransOption returns defaults: slow-request logging enabled, 500 ms threshold, access logs disabled.
 func NewLogTransOption() *LogTransOption {
 	return &LogTransOption{
 		enableSlowLog:  true,
@@ -37,6 +31,7 @@ func NewLogTransOption() *LogTransOption {
 	}
 }
 
+// WithSlowLog enables or disables logging when round-trip latency exceeds slowLatency.
 func (p *LogTransOption) WithSlowLog(enableSlowLog bool, slowLatency time.Duration) *LogTransOption {
 	p.enableSlowLog = enableSlowLog
 	p.slowLatency = slowLatency
@@ -44,24 +39,28 @@ func (p *LogTransOption) WithSlowLog(enableSlowLog bool, slowLatency time.Durati
 	return p
 }
 
+// IgnoreNotFound suppresses slow logs when the response status is [http.StatusNotFound].
 func (p *LogTransOption) IgnoreNotFound(ignoreNotFound bool) *LogTransOption {
 	p.ignoreNotFound = ignoreNotFound
 
 	return p
 }
 
+// WithAccessLog enables one line per request with method, host, URL, and latency.
 func (p *LogTransOption) WithAccessLog(enableAccessLog bool) *LogTransOption {
 	p.enableAccessLog = enableAccessLog
 
 	return p
 }
 
+// IncludeHeaders adds request and response headers to access logs when access logging is enabled.
 func (p *LogTransOption) IncludeHeaders(includeHeaders bool) *LogTransOption {
 	p.includeHeaders = includeHeaders
 
 	return p
 }
 
+// logTransport records latency histograms and optional structured logs around a delegate [http.RoundTripper].
 type logTransport struct {
 	transport http.RoundTripper
 
@@ -77,6 +76,7 @@ var defaultLogTransOption = &LogTransOption{
 	includeHeaders:  false,
 }
 
+// RoundTrip implements [http.RoundTripper].
 func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	startedAt := time.Now()
 	resp, err := p.transport.RoundTrip(req)
@@ -121,6 +121,7 @@ func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
+// wrapLogTransport returns a logging decorator around transport, or [http.DefaultTransport] when transport is nil.
 func wrapLogTransport(transport http.RoundTripper, logTransOption *LogTransOption) http.RoundTripper {
 	if transport == nil {
 		transport = http.DefaultTransport

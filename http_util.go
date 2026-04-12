@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  http_util.go
- * @Version: 1.0.0
- * @Date: 2022/05/28 10:46
- */
-
 package thttp
 
 import (
@@ -19,6 +11,7 @@ import (
 	"strings"
 )
 
+// appendParams appends URL-encoded query parameters, inserting "?" or "&" as required.
 func appendParams(url string, params url.Values) string {
 	if len(params) == 0 {
 		return url
@@ -37,6 +30,7 @@ func appendParams(url string, params url.Values) string {
 	return url
 }
 
+// loadFormFile streams fileName into a multipart form file field named fieldName.
 func loadFormFile(writer *multipart.Writer, fieldName, fileName string) error {
 	file, err := os.Open(fileName)
 	if err != nil {
@@ -55,6 +49,7 @@ func loadFormFile(writer *multipart.Writer, fieldName, fileName string) error {
 	return err
 }
 
+// GetRealIP returns the client IP from X-Real-Ip or the first valid X-Forwarded-For hop, or "127.0.0.1" if none match.
 func GetRealIP(r *http.Request) string {
 	varRealIP := r.Header.Get("X-Real-Ip")
 
@@ -78,6 +73,7 @@ func GetRealIP(r *http.Request) string {
 	return "127.0.0.1"
 }
 
+// GetRealHost returns the X-Host header when set, otherwise [http.Request.Host].
 func GetRealHost(r *http.Request) string {
 	valHost := r.Header.Get("X-Host")
 
@@ -88,6 +84,7 @@ func GetRealHost(r *http.Request) string {
 	return r.Host
 }
 
+// GetRealPort returns 443 when X-Scheme is "https", otherwise 80.
 func GetRealPort(r *http.Request) int32 {
 	valXScheme := r.Header.Get("X-Scheme")
 

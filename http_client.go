@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  http_client.go
- * @Version: 1.0.0
- * @Date: 2022/05/28 10:46
- */
-
 package thttp
 
 import (
@@ -29,34 +21,48 @@ import (
 	"github.com/choveylee/tlog"
 )
 
+// Client option keys for [HttpClient.WithOption], [RequestOption.WithOption], and related helpers.
 const (
+	// OptTimeout sets the [http.Client] total request timeout ([time.Duration]).
 	OptTimeout int = iota
 
+	// OptTransProxyUrl sets an HTTP proxy URL string (host:port; "http://" is prepended if missing).
 	OptTransProxyUrl
+	// OptTransProxyFunc sets a per-request proxy function (see [HttpClient.WithProxyFunc]).
 	OptTransProxyFunc
 
+	// OptTransMaxIdleConns sets [http.Transport.MaxIdleConns] (int).
 	OptTransMaxIdleConns
+	// OptTransMaxIdleConnsPerHost sets [http.Transport.MaxIdleConnsPerHost] (int).
 	OptTransMaxIdleConnsPerHost
+	// OptTransMaxConnsPerHost sets [http.Transport.MaxConnsPerHost] (int).
 	OptTransMaxConnsPerHost
 
+	// OptTransUnsafeTls sets [tls.Config.InsecureSkipVerify] on the transport (bool).
 	OptTransUnsafeTls
+	// OptTransTlsConfig replaces the transport TLS configuration (*[tls.Config]).
 	OptTransTlsConfig
 
+	// OptTransRetry attaches the retry [RoundTripper] with a [*RetryTransOption].
 	OptTransRetry
+	// OptTransLog attaches the logging [RoundTripper] with a [*LogTransOption].
 	OptTransLog
 
-	// Cookie Jar Option
+	// OptCookieJar enables the default cookie jar (bool) or supplies a custom [http.CookieJar].
 	OptCookieJar
 
-	// Redirect Option
+	// OptRedirectPolicy sets [http.Client.CheckRedirect] (func(*http.Request, []*http.Request) error).
 	OptRedirectPolicy
 
-	// Extra Option
+	// OptExtraRequestHookFunc is invoked before [http.Client.Do] (see [HttpClient.Do]).
 	OptExtraRequestHookFunc
 
+	// OptExtraResponseHookFunc is invoked after [http.Client.Do] returns.
 	OptExtraResponseHookFunc
 )
 
+// OptTransports lists option keys that update the shared [http.Transport] via [HttpClient.WithOption].
+// Options not in this set are stored and applied when building each [http.Client] in [HttpClient.Do].
 var (
 	OptTransports = map[int]int{
 		OptTransProxyUrl:  OptTransProxyUrl,
@@ -71,6 +77,7 @@ var (
 	}
 )
 
+// newDefaultTransport returns an [http.Transport] with dial timeouts, HTTP/2, and idle connection defaults.
 func newDefaultTransport() *http.Transport {
 	return &http.Transport{
 		DialContext: defaultTransportDialContext(&net.Dialer{
@@ -89,11 +96,19 @@ func newDefaultTransport() *http.Transport {
 	}
 }
 
+// ProxyFunc resolves a proxy identifier for an outgoing request. The exact contract is defined by the caller.
 type ProxyFunc func(*http.Request) (int, string, error)
+
+// RedirectPolicyFunc is the same shape as [http.Client.CheckRedirect].
 type RedirectPolicyFunc func(*http.Request, []*http.Request) error
+
+// RequestHookFunc is called immediately before [http.Client.Do] executes the request.
 type RequestHookFunc func(*http.Client, *http.Request)
+
+// ResponseHookFunc is called after [http.Client.Do] returns, receiving the response and error from the round trip.
 type ResponseHookFunc func(*http.Response, error)
 
+// prepareRequest constructs an [http.Request] with the supplied headers.
 func prepareRequest(ctx context.Context, method string, url string, headers map[string]string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -107,10 +122,12 @@ func prepareRequest(ctx context.Context, method string, url string, headers map[
 	return req, nil
 }
 
+// defaultTransportDialContext adapts a [net.Dialer] for use as [http.Transport.DialContext].
 func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
 	return dialer.DialContext
 }
 
+// wrapTransport layers logging and retry transports according to options.
 func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (http.RoundTripper, error) {
 	// add log transport
 	logTransOption := defaultLogTransOption
@@ -141,6 +158,7 @@ func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (ht
 	return desTransport, nil
 }
 
+// prepareCookieJar resolves [OptCookieJar] into a concrete [http.CookieJar] or nil.
 func prepareCookieJar(options map[int]interface{}) (http.CookieJar, error) {
 	srcOptCookieJar, ok := options[OptCookieJar]
 	if ok == true {
@@ -169,6 +187,7 @@ func prepareCookieJar(options map[int]interface{}) (http.CookieJar, error) {
 	return nil, nil
 }
 
+// prepareRedirect returns [http.Client.CheckRedirect] from [OptRedirectPolicy] when set.
 func prepareRedirect(options map[int]interface{}) (func(req *http.Request, via []*http.Request) error, error) {
 	var redirectPolicy func(req *http.Request, via []*http.Request) error
 
@@ -185,27 +204,32 @@ func prepareRedirect(options map[int]interface{}) (func(req *http.Request, via [
 	return redirectPolicy, nil
 }
 
+// HttpClient holds default transport settings, per-client options, and default headers used by [HttpClient.Do]
+// and the HTTP verb helpers.
 type HttpClient struct {
-	// Default options of this client.
+	// options stores [OptTimeout], hook functions, logging and retry configuration, and other non-transport keys.
 	options map[int]interface{}
 
-	// Default Headers of this client.
+	// headers holds default header keys (lowercased) merged into every request unless overridden per call.
 	headers map[string]string
 
-	// Global transport of this client
+	// transport is the base [http.Transport] mutated by transport-related options.
 	transport *http.Transport
 
 	connectTimeout  time.Duration
 	deadlineTimeout time.Duration
 
-	// Global cookie cookieJar of this client
+	// cookieJar is the optional default jar used when constructing clients if not overridden per request.
 	cookieJar http.CookieJar
 
+	// withDebug enables dumping of the outbound request via [net/http/httputil.DumpRequestOut].
 	withDebug bool
 
 	sync.RWMutex
 }
 
+// NewHttpClient returns an [HttpClient] with a fresh transport, 30-second connect and deadline timeouts,
+// and a default cookie jar when [cookiejar.New] succeeds.
 func NewHttpClient() *HttpClient {
 	httpClient := &HttpClient{
 		options: make(map[int]interface{}),
@@ -225,6 +249,8 @@ func NewHttpClient() *HttpClient {
 	return httpClient
 }
 
+// Defaults merges the provided options and headers into the client defaults. It is not safe for concurrent use
+// with in-flight requests unless the caller synchronizes access.
 func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]string) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
@@ -246,6 +272,7 @@ func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]st
 	return p
 }
 
+// Debug enables or disables verbose request logging for this client.
 func (p *HttpClient) Debug(val bool) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
@@ -255,13 +282,15 @@ func (p *HttpClient) Debug(val bool) *HttpClient {
 	return p
 }
 
+// Transport returns the underlying [http.Transport] used by this client.
 func (p *HttpClient) Transport() http.RoundTripper {
 	p.Lock()
-	defer p.Lock()
+	defer p.Unlock()
 
 	return p.transport
 }
 
+// resetTransport applies a single [OptTransports] key to the shared [http.Transport].
 func (p *HttpClient) resetTransport(key int, val interface{}) error {
 	if key == OptTransMaxIdleConns {
 		destMaxIdleConns, ok := val.(int)
@@ -360,6 +389,8 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 	return nil
 }
 
+// WithOption sets a client-wide option. Keys listed in [OptTransports] update the shared [http.Transport];
+// other keys are stored for use when [HttpClient.Do] builds the [http.Client].
 func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
@@ -378,56 +409,57 @@ func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 	return p
 }
 
-// WithTimeout timeout option
+// WithTimeout sets the default total timeout for requests made by this client ([OptTimeout]).
 func (p *HttpClient) WithTimeout(timeout time.Duration) *HttpClient {
 	return p.WithOption(OptTimeout, timeout)
 }
 
-// WithProxyUrl proxy address: ip:port
+// WithProxyUrl configures a static HTTP proxy address (for example "host:port").
 func (p *HttpClient) WithProxyUrl(addr string) *HttpClient {
 	return p.WithOption(OptTransProxyUrl, addr)
 }
 
-// WithProxyFunc proxy func
+// WithProxyFunc configures a function that supplies proxy information for each request.
 func (p *HttpClient) WithProxyFunc(option ProxyFunc) *HttpClient {
 	return p.WithOption(OptTransProxyFunc, option)
 }
 
-// WithUnsafeTls https TLS
+// WithUnsafeTls controls whether TLS certificate verification is skipped for HTTPS requests.
 func (p *HttpClient) WithUnsafeTls(unsafe bool) *HttpClient {
 	return p.WithOption(OptTransUnsafeTls, unsafe)
 }
 
-// WithRetryTransOption retry trans option
+// WithRetryTransOption enables the retrying [http.RoundTripper] with the supplied configuration.
 func (p *HttpClient) WithRetryTransOption(option *RetryTransOption) *HttpClient {
 	return p.WithOption(OptTransRetry, option)
 }
 
-// WithLogTransOption log trans option
+// WithLogTransOption enables the logging [http.RoundTripper] with the supplied configuration.
 func (p *HttpClient) WithLogTransOption(option *LogTransOption) *HttpClient {
 	return p.WithOption(OptTransLog, option)
 }
 
-// WithCookieJar cookie jar
+// WithCookieJar sets the default [http.CookieJar] for this client ([OptCookieJar]).
 func (p *HttpClient) WithCookieJar(jar http.CookieJar) *HttpClient {
 	return p.WithOption(OptCookieJar, jar)
 }
 
-// WithRedirectPolicy redirect policy
+// WithRedirectPolicy sets [http.Client.CheckRedirect] for requests from this client.
 func (p *HttpClient) WithRedirectPolicy(option RedirectPolicyFunc) *HttpClient {
 	return p.WithOption(OptRedirectPolicy, option)
 }
 
-// WithRequestHookFunc request hook func
+// WithRequestHookFunc registers a hook invoked before each [http.Client.Do] call.
 func (p *HttpClient) WithRequestHookFunc(option RequestHookFunc) *HttpClient {
 	return p.WithOption(OptExtraRequestHookFunc, option)
 }
 
-// WithResponseHookFunc response hook func
+// WithResponseHookFunc registers a hook invoked after each [http.Client.Do] call completes.
 func (p *HttpClient) WithResponseHookFunc(option ResponseHookFunc) *HttpClient {
 	return p.WithOption(OptExtraResponseHookFunc, option)
 }
 
+// WithOptions applies multiple options in sequence.
 func (p *HttpClient) WithOptions(options map[int]interface{}) *HttpClient {
 	for key, val := range options {
 		p.WithOption(key, val)
@@ -436,6 +468,7 @@ func (p *HttpClient) WithOptions(options map[int]interface{}) *HttpClient {
 	return p
 }
 
+// WithHeader sets a default header for all subsequent requests (key is stored in lowercase).
 func (p *HttpClient) WithHeader(key string, val string) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
@@ -445,18 +478,22 @@ func (p *HttpClient) WithHeader(key string, val string) *HttpClient {
 	return p
 }
 
+// WithReferer sets the default Referer header.
 func (p *HttpClient) WithReferer(val string) *HttpClient {
 	return p.WithHeader("referer", val)
 }
 
+// WithUserAgent sets the default User-Agent header.
 func (p *HttpClient) WithUserAgent(val string) *HttpClient {
 	return p.WithHeader("user-agent", val)
 }
 
+// WithContentType sets the default Content-Type header.
 func (p *HttpClient) WithContentType(val string) *HttpClient {
 	return p.WithHeader("content-type", val)
 }
 
+// WithHeaders merges multiple default headers.
 func (p *HttpClient) WithHeaders(headers map[string]string) *HttpClient {
 	for key, val := range headers {
 		p.WithHeader(key, val)
@@ -465,6 +502,8 @@ func (p *HttpClient) WithHeaders(headers map[string]string) *HttpClient {
 	return p
 }
 
+// Do issues an HTTP request with the given method and URL, merging client defaults with requestOption,
+// wrapping the transport with logging and retry layers when configured, and returning a [Response] wrapper.
 func (p *HttpClient) Do(ctx context.Context, method string, url string, requestOption *RequestOption, body io.Reader) (*Response, error) {
 	p.RLock()
 	defer p.RUnlock()
@@ -610,6 +649,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	return &Response{response}, err
 }
 
+// send builds a request body from params and delegates to [HttpClient.Do].
 func (p *HttpClient) send(ctx context.Context, method string, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
 	var body io.Reader
 
@@ -631,6 +671,7 @@ func (p *HttpClient) send(ctx context.Context, method string, url string, reques
 	return p.Do(ctx, method, url, requestOption, body)
 }
 
+// sendJson serializes params to JSON when needed and sets Content-Type to [ContentTypeApplicationJson].
 func (p *HttpClient) sendJson(ctx context.Context, method string, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
 	if requestOption == nil {
 		requestOption = NewRequestOption()
@@ -661,16 +702,19 @@ func (p *HttpClient) sendJson(ctx context.Context, method string, url string, re
 	return p.Do(ctx, method, url, requestOption, body)
 }
 
+// Head sends an HTTP HEAD request.
 func (p *HttpClient) Head(ctx context.Context, url string, requestOption *RequestOption) (*Response, error) {
 	return p.Do(ctx, "HEAD", url, requestOption, nil)
 }
 
+// Get sends an HTTP GET request, appending params as the query string.
 func (p *HttpClient) Get(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
 	url = appendParams(url, params)
 
 	return p.Do(ctx, "GET", url, requestOption, nil)
 }
 
+// GetLen performs a HEAD request and returns the Content-Length value when present and parseable.
 func (p *HttpClient) GetLen(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (int64, error) {
 	url = appendParams(url, params)
 
@@ -689,7 +733,7 @@ func (p *HttpClient) GetLen(ctx context.Context, url string, requestOption *Requ
 	return length, nil
 }
 
-// Post support data type: []byte
+// Post sends an HTTP POST request. The body is supplied as a byte slice via [HttpClient.send].
 func (p *HttpClient) Post(ctx context.Context, url string, requestOption *RequestOption, params []byte) (*Response, error) {
 	/*
 		switch retParams := params.(type) {
@@ -705,12 +749,12 @@ func (p *HttpClient) Post(ctx context.Context, url string, requestOption *Reques
 	return p.send(ctx, "POST", url, requestOption, params)
 }
 
-// PostJson support data type: map[string]interface{}/struct
+// PostJson sends an HTTP POST with a JSON-encoded body (structs and maps are marshaled with [encoding/json.Marshal]).
 func (p *HttpClient) PostJson(ctx context.Context, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
 	return p.sendJson(ctx, "POST", url, requestOption, params)
 }
 
-// PostMultipart support data type: file
+// PostMultipart sends multipart/form-data. Field names prefixed with '@' are treated as file paths for upload.
 func (p *HttpClient) PostMultipart(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -746,12 +790,13 @@ func (p *HttpClient) PostMultipart(ctx context.Context, url string, requestOptio
 	return p.Do(ctx, "POST", url, requestOption, body)
 }
 
+// FormData is a single multipart field name and value pair.
 type FormData struct {
 	Key   string
 	Value string
 }
 
-// PostMultipartEx support data type: file - for aws s3 file upload bug
+// PostMultipartEx sends multipart/form-data using an explicit slice of [FormData] fields.
 func (p *HttpClient) PostMultipartEx(ctx context.Context, url string, requestOption *RequestOption, params []*FormData) (*Response, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -788,40 +833,48 @@ func (p *HttpClient) PostMultipartEx(ctx context.Context, url string, requestOpt
 	return p.Do(ctx, "POST", url, requestOption, body)
 }
 
+// Put sends an HTTP PUT request with a raw body.
 func (p *HttpClient) Put(ctx context.Context, url string, requestOption *RequestOption, params []byte) (*Response, error) {
 	return p.send(ctx, "PUT", url, requestOption, params)
 }
 
+// PutJson sends an HTTP PUT with a JSON-encoded body.
 func (p *HttpClient) PutJson(ctx context.Context, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
 	return p.sendJson(ctx, "PUT", url, requestOption, params)
 }
 
+// Patch sends an HTTP PATCH request with a raw body.
 func (p *HttpClient) Patch(ctx context.Context, url string, requestOption *RequestOption, params []byte) (*Response, error) {
 	return p.send(ctx, "PATCH", url, requestOption, params)
 }
 
+// PatchJson sends an HTTP PATCH with a JSON-encoded body.
 func (p *HttpClient) PatchJson(ctx context.Context, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
 	return p.sendJson(ctx, "PATCH", url, requestOption, params)
 }
 
+// Delete sends an HTTP DELETE request, appending params as the query string.
 func (p *HttpClient) Delete(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
 	url = appendParams(url, params)
 
 	return p.send(ctx, "DELETE", url, requestOption, nil)
 }
 
+// Options sends an HTTP OPTIONS request.
 func (p *HttpClient) Options(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
 	url = appendParams(url, params)
 
 	return p.send(ctx, "OPTIONS", url, requestOption, nil)
 }
 
+// Connect sends an HTTP CONNECT request.
 func (p *HttpClient) Connect(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
 	url = appendParams(url, params)
 
 	return p.send(ctx, "CONNECT", url, requestOption, nil)
 }
 
+// Trace sends an HTTP TRACE request.
 func (p *HttpClient) Trace(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
 	url = appendParams(url, params)
 

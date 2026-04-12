@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description: policy for retry
- * @File:  http_policy
- * @Version: 1.0.0
- * @Date: 2022/05/28 11:44
- */
-
 package thttp
 
 import (
@@ -22,22 +14,17 @@ import (
 )
 
 var (
-	// RedirectErrorReg A regular expression to match the error returned by net/http when the
-	// configured number of redirects is exhausted. This error isn't typed
-	// specifically so we resort to matching on the error string.
+	// RedirectErrorReg matches the message produced by net/http when the maximum number of redirects is exceeded.
 	RedirectErrorReg = regexp.MustCompile(`stopped after \d+ redirects\z`)
 
-	// SchemeErrorReg A regular expression to match the error returned by net/http when the
-	// scheme specified in the URL is invalid. This error isn't typed
-	// specifically so we resort to matching on the error string.
+	// SchemeErrorReg matches the message produced for an unsupported URL scheme.
 	SchemeErrorReg = regexp.MustCompile(`unsupported protocol scheme`)
 
-	// NotTrustedErrorReg A regular expression to match the error returned by net/http when the
-	// TLS certificate is not trusted. This error isn't typed
-	// specifically so we resort to matching on the error string.
+	// NotTrustedErrorReg matches the message produced when a TLS certificate is not trusted.
 	NotTrustedErrorReg = regexp.MustCompile(`certificate is not trusted`)
 )
 
+// baseRetryPolicy implements the default retry eligibility rules shared by higher-level policies.
 func baseRetryPolicy(resp *http.Response, err error) (bool, error) {
 	if err != nil {
 		if val, ok := err.(*url.Error); ok {
@@ -82,8 +69,8 @@ func baseRetryPolicy(resp *http.Response, err error) (bool, error) {
 	return false, nil
 }
 
-// DefaultRetryPolicy provides a default callback for Client.CheckRetry, which
-// will retry on connection errors and server errors.
+// DefaultRetryPolicy decides whether to retry after a round trip. It returns false when the context
+// is canceled or deadlined; otherwise it applies the same eligibility rules as the internal base policy.
 func DefaultRetryPolicy(ctx context.Context, resp *http.Response, err error) (bool, error) {
 	// do not retry on context.Canceled or context.DeadlineExceeded
 	if ctx.Err() != nil {
@@ -96,9 +83,8 @@ func DefaultRetryPolicy(ctx context.Context, resp *http.Response, err error) (bo
 	return retryFlag, nil
 }
 
-// DefaultBackoff provides a default callback for Client.Backoff which
-// will perform exponential backoff based on the attempt number and limited
-// by the provided minimum and maximum durations.
+// DefaultBackoff performs exponential backoff capped at maxWaitTime, and honors Retry-After for
+// HTTP 429 and 503 responses when present.
 func DefaultBackoff(minWaitTime, maxWaitTime time.Duration, attemptNum int, resp *http.Response) time.Duration {
 	if resp != nil {
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
@@ -120,9 +106,8 @@ func DefaultBackoff(minWaitTime, maxWaitTime time.Duration, attemptNum int, resp
 	return sleepTime
 }
 
-// LinearJitterBackoff provides a callback for Client.Backoff which will
-// perform linear backoff based on the attempt number and with jitter to
-// prevent a thundering herd.
+// LinearJitterBackoff applies linearly increasing delays with pseudo-random jitter between minWaitTime
+// and maxWaitTime to reduce synchronized retries. The resp parameter is unused.
 func LinearJitterBackoff(minWaitTime, maxWaitTime time.Duration, attemptNum int, resp *http.Response) time.Duration {
 	// attemptNum always starts at zero but we want to start at 1 for multiplication
 	attemptNum++

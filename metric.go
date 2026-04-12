@@ -1,17 +1,10 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  metric.go
- * @Version: 1.0.0
- * @Date: 2022/07/14 10:58
- */
-
 package thttp
 
 import (
 	"github.com/choveylee/tmetric"
 )
 
+// httpClientRequestHistogram records per-request latency in milliseconds by method, status, and host.
 var (
 	httpClientRequestHistogram, _ = tmetric.NewHistogramVec(
 		"http_client_request_latency",

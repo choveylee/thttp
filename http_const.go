@@ -1,13 +1,6 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  http_const.go
- * @Version: 1.0.0
- * @Date: 2022/05/28 10:46
- */
-
 package thttp
 
+// Common Content-Type header values for HTTP requests and responses.
 const (
 	ContentTypeTextHtml  = "text/html"
 	ContentTypeTextPlain = "text/plain"

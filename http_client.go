@@ -102,11 +102,11 @@ type ProxyFunc = func(*http.Request) (*_url.URL, error)
 // RedirectPolicyFunc is the same shape as [http.Client.CheckRedirect].
 type RedirectPolicyFunc func(*http.Request, []*http.Request) error
 
-// RequestHookFunc is called immediately before [http.Client.Do] executes the request.
-type RequestHookFunc func(*http.Client, *http.Request)
+// RequestHookFunc is called immediately before [http.Client.Do] executes the request (alias so hooks survive [HttpClient.WithOption]).
+type RequestHookFunc = func(*http.Client, *http.Request)
 
 // ResponseHookFunc is called after [http.Client.Do] returns, receiving the response and error from the round trip.
-type ResponseHookFunc func(*http.Response, error)
+type ResponseHookFunc = func(*http.Response, error)
 
 // prepareRequest constructs an [http.Request] with the supplied headers.
 func prepareRequest(ctx context.Context, method string, url string, headers map[string]string, body io.Reader) (*http.Request, error) {
@@ -614,9 +614,9 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 
 	srcRequestHookFunc, ok := options[OptExtraRequestHookFunc]
 	if ok == true {
-		requestHookFunc, ok := srcRequestHookFunc.(func(context.Context, *http.Client, *http.Request))
+		requestHookFunc, ok := srcRequestHookFunc.(RequestHookFunc)
 		if ok == true {
-			requestHookFunc(ctx, client, request)
+			requestHookFunc(client, request)
 		}
 	}
 
@@ -640,9 +640,9 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 
 	srcResponseHookFunc, ok := options[OptExtraResponseHookFunc]
 	if ok == true {
-		responseHookFunc, ok := srcResponseHookFunc.(func(context.Context, *http.Response, error))
+		responseHookFunc, ok := srcResponseHookFunc.(ResponseHookFunc)
 		if ok == true {
-			responseHookFunc(ctx, response, err)
+			responseHookFunc(response, err)
 		}
 	}
 

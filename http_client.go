@@ -96,8 +96,8 @@ func newDefaultTransport() *http.Transport {
 	}
 }
 
-// ProxyFunc resolves a proxy identifier for an outgoing request. The exact contract is defined by the caller.
-type ProxyFunc func(*http.Request) (int, string, error)
+// ProxyFunc is the same type as [http.Transport.Proxy] (alias so values round-trip through [HttpClient.WithOption]).
+type ProxyFunc = func(*http.Request) (*_url.URL, error)
 
 // RedirectPolicyFunc is the same shape as [http.Client.CheckRedirect].
 type RedirectPolicyFunc func(*http.Request, []*http.Request) error
@@ -327,14 +327,14 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 	// proxy
 	if key == OptTransProxyFunc {
-		destProxyFunc, ok := val.(func(*http.Request) (*_url.URL, error))
+		destProxyFunc, ok := val.(ProxyFunc)
 		if ok == true {
-			proxyFunc := destProxyFunc
+			p.transport.Proxy = destProxyFunc
 
-			p.transport.Proxy = proxyFunc
-		} else {
-			return fmt.Errorf("proxy func type illegal")
+			return nil
 		}
+
+		return fmt.Errorf("proxy func type illegal, ProxyFunc supported")
 	} else if key == OptTransProxyUrl {
 		destProxy, ok := val.(string)
 		if ok == true {

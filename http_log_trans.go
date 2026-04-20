@@ -129,6 +129,10 @@ func wrapLogTransport(transport http.RoundTripper, logTransOption *LogTransOptio
 		transport = http.DefaultTransport
 	}
 
+	if logTransOption == nil {
+		logTransOption = defaultLogTransOption
+	}
+
 	logTransport := &logTransport{
 		transport:      transport,
 		logTransOption: logTransOption,

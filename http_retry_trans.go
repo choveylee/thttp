@@ -3,6 +3,7 @@ package thttp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -10,7 +11,7 @@ import (
 
 const (
 	// DefaultRetryMaxCount is the default upper bound on retry attempts after the first request.
-	DefaultRetryMaxCount    = 3
+	DefaultRetryMaxCount = 3
 	// DefaultRetryMinWaitTime is the default minimum backoff interval.
 	DefaultRetryMinWaitTime = time.Duration(100) * time.Millisecond
 	// DefaultRetryMaxWaitTime is the default maximum backoff interval.
@@ -118,15 +119,22 @@ func (p *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	retryTransOption := p.retryTransOption
 
-	var bodyBytes []byte
+	var body []byte
+
 	if req.Body != nil {
-		bodyBytes, _ = io.ReadAll(req.Body)
+		var err error
+
+		body, err = io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	for i := 0; ; i++ {
 		attemptNum++
 
-		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		req.Body = io.NopCloser(bytes.NewBuffer(body))
 
 		response, respErr = p.transport.RoundTrip(req)
 
@@ -147,6 +155,11 @@ func (p *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			break
 		}
 
+		if response != nil && response.Body != nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+		}
+
 		waitTime := retryTransOption.backoffFunc(retryTransOption.retryMinWaitTime, retryTransOption.retryMaxWaitTime, i, response)
 
 		timer := time.NewTimer(waitTime)
@@ -158,7 +171,7 @@ func (p *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 
-	return response, respErr
+	return response, errors.Join(respErr, checkErr)
 }
 
 // wrapRetryTransport returns a retrying decorator around transport, or [http.DefaultTransport] when transport is nil.

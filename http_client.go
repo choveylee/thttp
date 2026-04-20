@@ -252,36 +252,78 @@ func NewHttpClient() *HttpClient {
 	return httpClient
 }
 
+// cloneOptionValue returns a shallow copy for [*LogTransOption] and [*RetryTransOption] so stored config is not
+// aliased to a template the caller may mutate from another goroutine.
+func cloneOptionValue(key int, val interface{}) interface{} {
+	switch key {
+	case OptTransLog:
+		logTransOption, ok := val.(*LogTransOption)
+		if !ok {
+			return val
+		}
+
+		if logTransOption == nil {
+			return nil
+		}
+
+		copied := *logTransOption
+
+		return &copied
+	case OptTransRetry:
+		retryTransOption, ok := val.(*RetryTransOption)
+		if !ok {
+			return val
+		}
+
+		if retryTransOption == nil {
+			return nil
+		}
+
+		copied := *retryTransOption
+
+		return &copied
+	default:
+		return val
+	}
+}
+
 // Defaults merges the provided options and headers into the client defaults. Keys in [OptTransports] are applied
 // to the shared [http.Transport] (and are not stored in the options map), matching [HttpClient.WithOption].
-// It is not safe for concurrent use with in-flight requests unless the caller synchronizes access.
+// [LogTransOption] and [RetryTransOption] values are copied when stored so later mutation of the caller's struct
+// does not affect this client. It is not safe for concurrent use with in-flight requests unless the caller synchronizes access.
 func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]string) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
 
-	// merge options
-	if p.options != nil {
-		for key, val := range options {
-			if _, ok := OptTransports[key]; ok {
+	for key, val := range options {
+		if _, ok := OptTransports[key]; ok {
+			if p.options != nil {
 				delete(p.options, key)
-
-				err := p.resetTransport(key, val)
-				if err != nil {
-					p.transportErr = err
-					tlog.E(context.Background()).Err(err).Msgf("reset transport err (%v).", err)
-				} else {
-					p.transportErr = nil
-				}
-
-				continue
 			}
 
-			p.options[key] = val
+			err := p.resetTransport(key, val)
+			if err != nil {
+				p.transportErr = err
+				tlog.E(context.Background()).Err(err).Msgf("reset transport err (%v).", err)
+			} else {
+				p.transportErr = nil
+			}
+
+			continue
 		}
+
+		if p.options == nil {
+			p.options = make(map[int]interface{})
+		}
+
+		p.options[key] = cloneOptionValue(key, val)
 	}
 
-	// merge headers
-	if p.headers != nil {
+	if len(headers) > 0 {
+		if p.headers == nil {
+			p.headers = make(map[string]string)
+		}
+
 		for key, val := range headers {
 			p.headers[key] = val
 		}
@@ -409,6 +451,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 // WithOption sets a client-wide option. Keys listed in [OptTransports] update the shared [http.Transport];
 // other keys are stored for use when [HttpClient.Do] builds the [http.Client].
+// [*LogTransOption] and [*RetryTransOption] are shallow-copied when stored so callers can reuse the same template safely.
 // A failed transport update is logged and causes subsequent [HttpClient.Do] calls to return that error until a transport option applies successfully ([HttpClient.Defaults] behaves the same for transport keys).
 func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 	p.Lock()
@@ -426,7 +469,11 @@ func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 			p.transportErr = nil
 		}
 	} else {
-		p.options[key] = val
+		if p.options == nil {
+			p.options = make(map[int]interface{})
+		}
+
+		p.options[key] = cloneOptionValue(key, val)
 	}
 
 	return p
@@ -495,6 +542,10 @@ func (p *HttpClient) WithOptions(options map[int]interface{}) *HttpClient {
 func (p *HttpClient) WithHeader(key string, val string) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
+
+	if p.headers == nil {
+		p.headers = make(map[string]string)
+	}
 
 	p.headers[strings.ToLower(key)] = val
 

@@ -32,6 +32,7 @@ func NewRequestOption() *RequestOption {
 }
 
 // WithOption sets a per-request option. Keys listed in [OptTransports] are ignored (transport fields are client-wide).
+// [*LogTransOption] and [*RetryTransOption] are shallow-copied when stored so callers can reuse the same template safely.
 func (p *RequestOption) WithOption(key int, val interface{}) *RequestOption {
 	p.Lock()
 	defer p.Unlock()
@@ -41,7 +42,11 @@ func (p *RequestOption) WithOption(key int, val interface{}) *RequestOption {
 		return p
 	}
 
-	p.Options[key] = val
+	if p.Options == nil {
+		p.Options = make(map[int]interface{})
+	}
+
+	p.Options[key] = cloneOptionValue(key, val)
 
 	return p
 }
@@ -94,6 +99,10 @@ func (p *RequestOption) WithOptions(options map[int]interface{}) *RequestOption 
 func (p *RequestOption) WithHeader(key string, val string) *RequestOption {
 	p.Lock()
 	defer p.Unlock()
+
+	if p.Headers == nil {
+		p.Headers = make(map[string]string)
+	}
 
 	p.Headers[strings.ToLower(key)] = val
 

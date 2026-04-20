@@ -108,7 +108,8 @@ type RequestHookFunc = func(*http.Client, *http.Request)
 // ResponseHookFunc is called after [http.Client.Do] returns, receiving the response and error from the round trip.
 type ResponseHookFunc = func(*http.Response, error)
 
-// prepareRequest constructs an [http.Request] with the supplied headers.
+// prepareRequest builds an [http.Request] with the given method, URL, body, and default headers.
+// It does not set [http.Request.GetBody]; callers that require retriable bodies must assign it separately.
 func prepareRequest(ctx context.Context, method string, url string, headers map[string]string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -127,7 +128,8 @@ func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, strin
 	return dialer.DialContext
 }
 
-// wrapTransport layers logging and retry transports according to options.
+// wrapTransport decorates transport with [OptTransLog] first, then [OptTransRetry] (retry is the outermost [http.RoundTripper]).
+// Invalid option value types return an error prefixed with "thttp:".
 func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (http.RoundTripper, error) {
 	// add log transport
 	logTransOption := defaultLogTransOption
@@ -138,7 +140,7 @@ func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (ht
 		if ok == true {
 			logTransOption = destLogTransOption
 		} else {
-			return nil, fmt.Errorf("log trans option type illegal")
+			return nil, fmt.Errorf("thttp: invalid value for OptTransLog: expected *LogTransOption, got %T", srcLogTransOption)
 		}
 	}
 
@@ -151,14 +153,15 @@ func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (ht
 		if ok == true {
 			desTransport = wrapRetryTransport(desTransport, desRetryTransOption)
 		} else {
-			return nil, fmt.Errorf("retry trans option type illegal")
+			return nil, fmt.Errorf("thttp: invalid value for OptTransRetry: expected *RetryTransOption, got %T", srcRetryTransOption)
 		}
 	}
 
 	return desTransport, nil
 }
 
-// prepareCookieJar resolves [OptCookieJar] into a concrete [http.CookieJar] or nil.
+// prepareCookieJar interprets [OptCookieJar]: true allocates a default jar, [http.CookieJar] is used as-is,
+// false or absent yields nil. Any other type returns an error.
 func prepareCookieJar(options map[int]interface{}) (http.CookieJar, error) {
 	srcOptCookieJar, ok := options[OptCookieJar]
 	if ok == true {
@@ -177,7 +180,7 @@ func prepareCookieJar(options map[int]interface{}) (http.CookieJar, error) {
 		} else {
 			jar, ok := srcOptCookieJar.(http.CookieJar)
 			if ok == false {
-				return nil, fmt.Errorf("cookie cookieJar type illegal, cookie cookieJar supported")
+				return nil, fmt.Errorf("thttp: invalid value for OptCookieJar: expected bool or http.CookieJar, got %T", srcOptCookieJar)
 			}
 
 			return jar, nil
@@ -187,7 +190,7 @@ func prepareCookieJar(options map[int]interface{}) (http.CookieJar, error) {
 	return nil, nil
 }
 
-// prepareRedirect returns [http.Client.CheckRedirect] from [OptRedirectPolicy] when set.
+// prepareRedirect returns the redirect handler from [OptRedirectPolicy] when set, or nil if unset.
 func prepareRedirect(options map[int]interface{}) (func(req *http.Request, via []*http.Request) error, error) {
 	var redirectPolicy func(req *http.Request, via []*http.Request) error
 
@@ -195,7 +198,7 @@ func prepareRedirect(options map[int]interface{}) (func(req *http.Request, via [
 	if ok == true {
 		destRedirectPolicy, ok := srcRedirectPolicy.(func(*http.Request, []*http.Request) error)
 		if ok == false {
-			return nil, fmt.Errorf("redirect policy type illegal")
+			return nil, fmt.Errorf("thttp: invalid value for OptRedirectPolicy: expected func(*http.Request, []*http.Request) error, got %T", srcRedirectPolicy)
 		}
 
 		redirectPolicy = destRedirectPolicy
@@ -375,7 +378,8 @@ func (p *HttpClient) ensureTransportLocked() {
 	}
 }
 
-// resetTransport applies a single [OptTransports] key to the shared [http.Transport].
+// resetTransport applies one [OptTransports] option to [HttpClient.transport]. The caller must hold [HttpClient.Lock].
+// It returns an error if val is not assignable to the documented Go type for that option key.
 func (p *HttpClient) resetTransport(key int, val interface{}) error {
 	p.ensureTransportLocked()
 
@@ -386,7 +390,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 			return nil
 		} else {
-			return fmt.Errorf("max idle conns type illegal, int supported")
+			return fmt.Errorf("thttp: invalid value for OptTransMaxIdleConns: expected int, got %T", val)
 		}
 	}
 
@@ -397,7 +401,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 			return nil
 		} else {
-			return fmt.Errorf("max idle conns per host type illegal, int supported")
+			return fmt.Errorf("thttp: invalid value for OptTransMaxIdleConnsPerHost: expected int, got %T", val)
 		}
 	}
 
@@ -408,7 +412,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 			return nil
 		} else {
-			return fmt.Errorf("max conns per host type illegal, int supported")
+			return fmt.Errorf("thttp: invalid value for OptTransMaxConnsPerHost: expected int, got %T", val)
 		}
 	}
 
@@ -421,7 +425,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 			return nil
 		}
 
-		return fmt.Errorf("proxy func type illegal, ProxyFunc supported")
+		return fmt.Errorf("thttp: invalid value for OptTransProxyFunc: expected ProxyFunc (func(*http.Request) (*url.URL, error)), got %T", val)
 	} else if key == OptTransProxyUrl {
 		destProxy, ok := val.(string)
 		if ok == true {
@@ -440,7 +444,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 			return nil
 		} else {
-			return fmt.Errorf("proxy type illegal, string supported")
+			return fmt.Errorf("thttp: invalid value for OptTransProxyUrl: expected string, got %T", val)
 		}
 	}
 
@@ -460,7 +464,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 			return nil
 		} else {
-			return fmt.Errorf("unsafe tls type illegal, bool supported")
+			return fmt.Errorf("thttp: invalid value for OptTransUnsafeTls: expected bool, got %T", val)
 		}
 	}
 
@@ -469,7 +473,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 		if ok == true {
 			p.transport.TLSClientConfig = destTlsConfig
 		} else {
-			return fmt.Errorf("tls config type illegal, tls config supported")
+			return fmt.Errorf("thttp: invalid value for OptTransTlsConfig: expected *tls.Config, got %T", val)
 		}
 	}
 
@@ -603,8 +607,10 @@ func (p *HttpClient) WithHeaders(headers map[string]string) *HttpClient {
 	return p
 }
 
-// Do issues an HTTP request with the given method and URL, merging client defaults with requestOption,
-// wrapping the transport with logging and retry layers when configured, and returning a [Response] wrapper.
+// Do executes an HTTP request: it merges client defaults with requestOption, builds an [http.Client] with
+// wrapped transport (logging, then retry), and returns a [Response]. When body is read into memory,
+// [http.Request.GetBody] and [http.Request.ContentLength] are set so retries can replay the payload without
+// buffering again in the retry layer.
 func (p *HttpClient) Do(ctx context.Context, method string, url string, requestOption *RequestOption, body io.Reader) (*Response, error) {
 	p.lazyInitTransport()
 
@@ -679,7 +685,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	if ok == true {
 		destTimeout, ok := srcTimeout.(time.Duration)
 		if ok == false {
-			return nil, fmt.Errorf("timeout type illegal, time.duration supported")
+			return nil, fmt.Errorf("thttp: invalid value for OptTimeout: expected time.Duration, got %T", srcTimeout)
 		} else {
 			timeout = destTimeout
 		}
@@ -780,7 +786,8 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	return &Response{response}, err
 }
 
-// send builds a request body from params and delegates to [HttpClient.Do].
+// send converts params to an [io.Reader] for the given verb helpers and calls [HttpClient.Do].
+// Supported types for params are listed in the error returned from the default branch.
 func (p *HttpClient) send(ctx context.Context, method string, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
 	var body io.Reader
 
@@ -796,7 +803,7 @@ func (p *HttpClient) send(ctx context.Context, method string, url string, reques
 	case _url.Values:
 		body = strings.NewReader(retParams.Encode())
 	default:
-		return nil, fmt.Errorf("params type not support")
+		return nil, fmt.Errorf("thttp: unsupported body type for send: %T (supported: nil, []byte, string, *bytes.Reader, url.Values)", retParams)
 	}
 
 	return p.Do(ctx, method, url, requestOption, body)

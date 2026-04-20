@@ -167,6 +167,10 @@ func wrapRetryTransport(transport http.RoundTripper, retryTransOption *RetryTran
 		transport = http.DefaultTransport
 	}
 
+	if retryTransOption == nil {
+		retryTransOption = DefaultRetryTransOption
+	}
+
 	retryTransport := &retryTransport{
 		transport:        transport,
 		retryTransOption: retryTransOption,

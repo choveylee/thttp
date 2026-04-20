@@ -650,12 +650,13 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 		}
 	}
 
-	response, err := client.Do(request)
+	isAbnormal := false
 
-	isAbnormal := err != nil
-	if !isAbnormal && response != nil {
-		code := response.StatusCode
-		isAbnormal = code < 200 || code > 299
+	response, err := client.Do(request)
+	if err != nil {
+		isAbnormal = true
+	} else if response != nil && response.StatusCode >= 400 {
+		isAbnormal = true
 	}
 
 	if isAbnormal {

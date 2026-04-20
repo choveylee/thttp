@@ -110,8 +110,10 @@ func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 				event = event.Detailf("req.header.%s: %s", key, strings.Join(vals, ";"))
 			}
 
-			for key, vals := range resp.Header {
-				event = event.Detailf("resp.header.%s: %s", key, strings.Join(vals, ";"))
+			if resp != nil {
+				for key, vals := range resp.Header {
+					event = event.Detailf("resp.header.%s: %s", key, strings.Join(vals, ";"))
+				}
 			}
 		}
 

@@ -225,7 +225,7 @@ type HttpClient struct {
 	// withDebug enables dumping of the outbound request via [net/http/httputil.DumpRequestOut].
 	withDebug bool
 
-	// transportErr is set when the last [HttpClient.WithOption] for an [OptTransports] key failed to apply.
+	// transportErr is set when the last [HttpClient.WithOption] or [HttpClient.Defaults] for an [OptTransports] key failed to apply.
 	transportErr error
 
 	sync.RWMutex
@@ -252,8 +252,9 @@ func NewHttpClient() *HttpClient {
 	return httpClient
 }
 
-// Defaults merges the provided options and headers into the client defaults. It is not safe for concurrent use
-// with in-flight requests unless the caller synchronizes access.
+// Defaults merges the provided options and headers into the client defaults. Keys in [OptTransports] are applied
+// to the shared [http.Transport] (and are not stored in the options map), matching [HttpClient.WithOption].
+// It is not safe for concurrent use with in-flight requests unless the caller synchronizes access.
 func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]string) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
@@ -261,6 +262,20 @@ func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]st
 	// merge options
 	if p.options != nil {
 		for key, val := range options {
+			if _, ok := OptTransports[key]; ok {
+				delete(p.options, key)
+
+				err := p.resetTransport(key, val)
+				if err != nil {
+					p.transportErr = err
+					tlog.E(context.Background()).Err(err).Msgf("reset transport err (%v).", err)
+				} else {
+					p.transportErr = nil
+				}
+
+				continue
+			}
+
 			p.options[key] = val
 		}
 	}
@@ -394,7 +409,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 // WithOption sets a client-wide option. Keys listed in [OptTransports] update the shared [http.Transport];
 // other keys are stored for use when [HttpClient.Do] builds the [http.Client].
-// A failed transport update is logged and causes subsequent [HttpClient.Do] calls to return that error until a transport option applies successfully.
+// A failed transport update is logged and causes subsequent [HttpClient.Do] calls to return that error until a transport option applies successfully ([HttpClient.Defaults] behaves the same for transport keys).
 func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
@@ -740,6 +755,9 @@ func (p *HttpClient) GetLen(ctx context.Context, url string, requestOption *Requ
 	url = appendParams(url, params)
 
 	resp, err := p.Do(ctx, "HEAD", url, requestOption, nil)
+	if resp != nil && resp.Response != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
 	if err != nil {
 		return -1, err
 	}

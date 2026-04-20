@@ -103,6 +103,8 @@ var DefaultRetryTransOption = &RetryTransOption{
 }
 
 // retryTransport replays request bodies and applies retry and backoff policies around a delegate [http.RoundTripper].
+// When [http.Request.GetBody] is set, each attempt (including the first) obtains a fresh [http.Request.Body] via GetBody
+// so large or streaming payloads are not buffered in memory. Otherwise the body is read once with [io.ReadAll] and replayed from a buffer.
 type retryTransport struct {
 	transport http.RoundTripper
 
@@ -119,9 +121,15 @@ func (p *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	retryTransOption := p.retryTransOption
 
+	reuseBody := false
+
+	if req.GetBody != nil {
+		reuseBody = true
+	}
+
 	var body []byte
 
-	if req.Body != nil {
+	if !reuseBody && req.Body != nil {
 		var err error
 
 		body, err = io.ReadAll(req.Body)
@@ -134,7 +142,20 @@ func (p *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	for i := 0; ; i++ {
 		attemptNum++
 
-		req.Body = io.NopCloser(bytes.NewBuffer(body))
+		if reuseBody {
+			if req.Body != nil {
+				_ = req.Body.Close()
+			}
+
+			readerCloser, err := req.GetBody()
+			if err != nil {
+				return nil, err
+			}
+
+			req.Body = readerCloser
+		} else {
+			req.Body = io.NopCloser(bytes.NewBuffer(body))
+		}
 
 		response, respErr = p.transport.RoundTrip(req)
 

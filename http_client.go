@@ -21,7 +21,7 @@ import (
 	"github.com/choveylee/tlog"
 )
 
-// Client option keys for [HttpClient.WithOption], [RequestOption.WithOption], and related helpers.
+// Client option keys for [HttpClient.WithOption] and [RequestOption] typed helpers (e.g. [RequestOption.WithTimeout]).
 const (
 	// OptTimeout sets the [http.Client] total request timeout ([time.Duration]).
 	OptTimeout int = iota
@@ -595,7 +595,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	}
 
 	if requestOption != nil {
-		for key, val := range requestOption.Options {
+		for key, val := range requestOption.options {
 			options[key] = val
 		}
 	}

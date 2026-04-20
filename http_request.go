@@ -8,8 +8,10 @@ import (
 )
 
 // RequestOption carries per-request options, headers, and cookies merged with [HttpClient] defaults.
+// Per-request option keys must be set only through typed helpers (e.g. [RequestOption.WithLogTransOption]);
+// there is no generic option setter so [*LogTransOption] / [*RetryTransOption] are always shallow-copied when stored.
 type RequestOption struct {
-	Options map[int]interface{}
+	options map[int]interface{}
 
 	Headers map[string]string
 
@@ -21,7 +23,7 @@ type RequestOption struct {
 // NewRequestOption returns an empty [RequestOption] ready for configuration.
 func NewRequestOption() *RequestOption {
 	requestOption := &RequestOption{
-		Options: make(map[int]interface{}),
+		options: make(map[int]interface{}),
 
 		Headers: make(map[string]string),
 
@@ -31,68 +33,57 @@ func NewRequestOption() *RequestOption {
 	return requestOption
 }
 
-// WithOption sets a per-request option. Keys listed in [OptTransports] are ignored (transport fields are client-wide).
-// [*LogTransOption] and [*RetryTransOption] are shallow-copied when stored so callers can reuse the same template safely.
-func (p *RequestOption) WithOption(key int, val interface{}) *RequestOption {
+// setOption stores a per-request option. Keys in [OptTransports] are ignored (transport is client-wide).
+func (p *RequestOption) setOption(key int, val interface{}) *RequestOption {
 	p.Lock()
 	defer p.Unlock()
 
-	_, ok := OptTransports[key]
-	if ok == true {
+	if _, skip := OptTransports[key]; skip {
 		return p
 	}
 
-	if p.Options == nil {
-		p.Options = make(map[int]interface{})
+	if p.options == nil {
+		p.options = make(map[int]interface{})
 	}
 
-	p.Options[key] = cloneOptionValue(key, val)
+	p.options[key] = cloneOptionValue(key, val)
 
 	return p
 }
 
 // WithTimeout sets [OptTimeout] for this request only.
 func (p *RequestOption) WithTimeout(timeout time.Duration) *RequestOption {
-	return p.WithOption(OptTimeout, timeout)
+	return p.setOption(OptTimeout, timeout)
 }
 
 // WithRetryTransOption attaches retry behavior for this request ([OptTransRetry]).
 func (p *RequestOption) WithRetryTransOption(option *RetryTransOption) *RequestOption {
-	return p.WithOption(OptTransRetry, option)
+	return p.setOption(OptTransRetry, option)
 }
 
 // WithLogTransOption attaches logging behavior for this request ([OptTransLog]).
 func (p *RequestOption) WithLogTransOption(option *LogTransOption) *RequestOption {
-	return p.WithOption(OptTransLog, option)
+	return p.setOption(OptTransLog, option)
 }
 
 // WithCookieJar sets the cookie jar for this request ([OptCookieJar]).
 func (p *RequestOption) WithCookieJar(jar http.CookieJar) *RequestOption {
-	return p.WithOption(OptCookieJar, jar)
+	return p.setOption(OptCookieJar, jar)
 }
 
 // WithRedirectPolicy sets the redirect policy for this request ([OptRedirectPolicy]).
 func (p *RequestOption) WithRedirectPolicy(option RedirectPolicyFunc) *RequestOption {
-	return p.WithOption(OptRedirectPolicy, option)
+	return p.setOption(OptRedirectPolicy, option)
 }
 
 // WithRequestHookFunc registers a pre-request hook for this request ([OptExtraRequestHookFunc]).
 func (p *RequestOption) WithRequestHookFunc(option RequestHookFunc) *RequestOption {
-	return p.WithOption(OptExtraRequestHookFunc, option)
+	return p.setOption(OptExtraRequestHookFunc, option)
 }
 
 // WithResponseHookFunc registers a post-request hook for this request ([OptExtraResponseHookFunc]).
 func (p *RequestOption) WithResponseHookFunc(option ResponseHookFunc) *RequestOption {
-	return p.WithOption(OptExtraResponseHookFunc, option)
-}
-
-// WithOptions merges multiple per-request options.
-func (p *RequestOption) WithOptions(options map[int]interface{}) *RequestOption {
-	for key, val := range options {
-		p.WithOption(key, val)
-	}
-
-	return p
+	return p.setOption(OptExtraResponseHookFunc, option)
 }
 
 // WithHeader sets a header for this request (key is stored in lowercase).

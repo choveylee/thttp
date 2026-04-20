@@ -225,6 +225,9 @@ type HttpClient struct {
 	// withDebug enables dumping of the outbound request via [net/http/httputil.DumpRequestOut].
 	withDebug bool
 
+	// transportErr is set when the last [HttpClient.WithOption] for an [OptTransports] key failed to apply.
+	transportErr error
+
 	sync.RWMutex
 }
 
@@ -391,6 +394,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 // WithOption sets a client-wide option. Keys listed in [OptTransports] update the shared [http.Transport];
 // other keys are stored for use when [HttpClient.Do] builds the [http.Client].
+// A failed transport update is logged and causes subsequent [HttpClient.Do] calls to return that error until a transport option applies successfully.
 func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
@@ -399,8 +403,12 @@ func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 	if ok == true {
 		err := p.resetTransport(key, val)
 		if err != nil {
+			p.transportErr = err
+
 			tlog.E(context.Background()).Err(err).Msgf("reset transport err (%v).",
 				err)
+		} else {
+			p.transportErr = nil
 		}
 	} else {
 		p.options[key] = val
@@ -508,6 +516,10 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	p.RLock()
 	defer p.RUnlock()
 
+	if p.transportErr != nil {
+		return nil, p.transportErr
+	}
+
 	// prepare all request configs
 	// merge options
 	options := make(map[int]interface{})
@@ -583,9 +595,12 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	var bodyBytes []byte
 
 	if body != nil {
-		bodyBytes, _ = io.ReadAll(body)
+		var readErr error
+		bodyBytes, readErr = io.ReadAll(body)
+		if readErr != nil {
+			return nil, readErr
+		}
 
-		// body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 		body = bytes.NewReader(bodyBytes)
 	}
 
@@ -622,7 +637,13 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 
 	response, err := client.Do(request)
 
-	if err != nil || response.StatusCode != http.StatusOK {
+	isAbnormal := err != nil
+	if !isAbnormal && response != nil {
+		code := response.StatusCode
+		isAbnormal = code < 200 || code > 299
+	}
+
+	if isAbnormal {
 		event := tlog.W(request.Context()).Err(err).Detailf("req.method: %s", request.Method).
 			Detailf("req.host: %s", request.Host).Detailf("req.url: %s", request.URL.String()).
 			Detailf("req.body: %s", string(bodyBytes))

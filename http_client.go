@@ -228,11 +228,14 @@ type HttpClient struct {
 	// transportErr is set when the last [HttpClient.WithOption] or [HttpClient.Defaults] for an [OptTransports] key failed to apply.
 	transportErr error
 
+	transportInit sync.Once
 	sync.RWMutex
 }
 
 // NewHttpClient returns an [HttpClient] with a fresh transport, 30-second connect and deadline timeouts,
 // and a default cookie jar when [cookiejar.New] succeeds.
+// A zero [HttpClient] is usable: the first [HttpClient.Do] or [HttpClient.Transport] runs [HttpClient.lazyInitTransport];
+// transport [HttpClient.WithOption] / [HttpClient.Defaults] use [HttpClient.ensureTransportLocked] under [HttpClient.Lock].
 func NewHttpClient() *HttpClient {
 	httpClient := &HttpClient{
 		options: make(map[int]interface{}),
@@ -342,16 +345,40 @@ func (p *HttpClient) Debug(val bool) *HttpClient {
 	return p
 }
 
+// lazyInitTransport allocates [HttpClient.transport] once on first [HttpClient.Do] or [HttpClient.Transport].
+// [HttpClient.WithOption] transport keys use [HttpClient.ensureTransportLocked] instead (caller already holds [HttpClient.Lock]).
+func (p *HttpClient) lazyInitTransport() {
+	p.transportInit.Do(func() {
+		p.Lock()
+		defer p.Unlock()
+
+		if p.transport == nil {
+			p.transport = newDefaultTransport()
+		}
+	})
+}
+
 // Transport returns the underlying [http.Transport] used by this client.
 func (p *HttpClient) Transport() http.RoundTripper {
-	p.Lock()
-	defer p.Unlock()
+	p.lazyInitTransport()
+
+	p.RLock()
+	defer p.RUnlock()
 
 	return p.transport
 }
 
+// ensureTransportLocked sets [HttpClient.transport] if nil. Caller must hold [HttpClient.Lock].
+func (p *HttpClient) ensureTransportLocked() {
+	if p.transport == nil {
+		p.transport = newDefaultTransport()
+	}
+}
+
 // resetTransport applies a single [OptTransports] key to the shared [http.Transport].
 func (p *HttpClient) resetTransport(key int, val interface{}) error {
+	p.ensureTransportLocked()
+
 	if key == OptTransMaxIdleConns {
 		destMaxIdleConns, ok := val.(int)
 		if ok == true {
@@ -579,6 +606,8 @@ func (p *HttpClient) WithHeaders(headers map[string]string) *HttpClient {
 // Do issues an HTTP request with the given method and URL, merging client defaults with requestOption,
 // wrapping the transport with logging and retry layers when configured, and returning a [Response] wrapper.
 func (p *HttpClient) Do(ctx context.Context, method string, url string, requestOption *RequestOption, body io.Reader) (*Response, error) {
+	p.lazyInitTransport()
+
 	p.RLock()
 	defer p.RUnlock()
 
@@ -660,11 +689,16 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 
 	var bodyBytes []byte
 
+	reuseBody := false
+
 	if body != nil {
-		var readErr error
-		bodyBytes, readErr = io.ReadAll(body)
-		if readErr != nil {
-			return nil, readErr
+		reuseBody = true
+
+		var err error
+
+		bodyBytes, err = io.ReadAll(body)
+		if err != nil {
+			return nil, err
 		}
 
 		body = bytes.NewReader(bodyBytes)
@@ -673,6 +707,15 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	request, err := prepareRequest(ctx, method, url, headers, body)
 	if err != nil {
 		return nil, err
+	}
+
+	if reuseBody {
+		payload := bodyBytes
+
+		request.ContentLength = int64(len(payload))
+		request.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(payload)), nil
+		}
 	}
 
 	// output debug info

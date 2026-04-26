@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -99,8 +100,8 @@ func newDefaultTransport() *http.Transport {
 // ProxyFunc is the same type as [http.Transport.Proxy] (alias so values round-trip through [HttpClient.WithOption]).
 type ProxyFunc = func(*http.Request) (*_url.URL, error)
 
-// RedirectPolicyFunc is the same shape as [http.Client.CheckRedirect].
-type RedirectPolicyFunc func(*http.Request, []*http.Request) error
+// RedirectPolicyFunc is the same type as [http.Client.CheckRedirect].
+type RedirectPolicyFunc = func(*http.Request, []*http.Request) error
 
 // RequestHookFunc is called immediately before [http.Client.Do] executes the request (alias so hooks survive [HttpClient.WithOption]).
 type RequestHookFunc = func(*http.Client, *http.Request)
@@ -123,13 +124,34 @@ func prepareRequest(ctx context.Context, method string, url string, headers map[
 	return req, nil
 }
 
+// snapshotRequestBody reopens and reads the request body for logging when [http.Request.GetBody] is available.
+func snapshotRequestBody(req *http.Request) []byte {
+	if req == nil || req.GetBody == nil {
+		return nil
+	}
+
+	body, err := req.GetBody()
+	if err != nil {
+		return nil
+	}
+
+	defer body.Close()
+
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return nil
+	}
+
+	return data
+}
+
 // defaultTransportDialContext adapts a [net.Dialer] for use as [http.Transport.DialContext].
 func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
 	return dialer.DialContext
 }
 
 // wrapTransport decorates transport with [OptTransLog] first, then [OptTransRetry] (retry is the outermost [http.RoundTripper]).
-// Invalid option value types return an error prefixed with "thttp:".
+// Invalid option value types return errors prefixed with "thttp:" and use "invalid <option> value" wording.
 func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (http.RoundTripper, error) {
 	// add log transport
 	logTransOption := defaultLogTransOption
@@ -140,7 +162,7 @@ func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (ht
 		if ok == true {
 			logTransOption = destLogTransOption
 		} else {
-			return nil, fmt.Errorf("thttp: invalid value for OptTransLog: expected *LogTransOption, got %T", srcLogTransOption)
+			return nil, fmt.Errorf("thttp: invalid OptTransLog value: want *LogTransOption, got %T", srcLogTransOption)
 		}
 	}
 
@@ -153,7 +175,7 @@ func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (ht
 		if ok == true {
 			desTransport = wrapRetryTransport(desTransport, desRetryTransOption)
 		} else {
-			return nil, fmt.Errorf("thttp: invalid value for OptTransRetry: expected *RetryTransOption, got %T", srcRetryTransOption)
+			return nil, fmt.Errorf("thttp: invalid OptTransRetry value: want *RetryTransOption, got %T", srcRetryTransOption)
 		}
 	}
 
@@ -161,7 +183,7 @@ func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (ht
 }
 
 // prepareCookieJar interprets [OptCookieJar]: true allocates a default jar, [http.CookieJar] is used as-is,
-// false or absent yields nil. Any other type returns an error.
+// false or absent yields nil. Any other type returns an error using "invalid OptCookieJar value" wording.
 func prepareCookieJar(options map[int]interface{}) (http.CookieJar, error) {
 	srcOptCookieJar, ok := options[OptCookieJar]
 	if ok == true {
@@ -180,7 +202,7 @@ func prepareCookieJar(options map[int]interface{}) (http.CookieJar, error) {
 		} else {
 			jar, ok := srcOptCookieJar.(http.CookieJar)
 			if ok == false {
-				return nil, fmt.Errorf("thttp: invalid value for OptCookieJar: expected bool or http.CookieJar, got %T", srcOptCookieJar)
+				return nil, fmt.Errorf("thttp: invalid OptCookieJar value: want bool or http.CookieJar, got %T", srcOptCookieJar)
 			}
 
 			return jar, nil
@@ -198,7 +220,7 @@ func prepareRedirect(options map[int]interface{}) (func(req *http.Request, via [
 	if ok == true {
 		destRedirectPolicy, ok := srcRedirectPolicy.(func(*http.Request, []*http.Request) error)
 		if ok == false {
-			return nil, fmt.Errorf("thttp: invalid value for OptRedirectPolicy: expected func(*http.Request, []*http.Request) error, got %T", srcRedirectPolicy)
+			return nil, fmt.Errorf("thttp: invalid OptRedirectPolicy value: want func(*http.Request, []*http.Request) error, got %T", srcRedirectPolicy)
 		}
 
 		redirectPolicy = destRedirectPolicy
@@ -301,18 +323,23 @@ func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]st
 	p.Lock()
 	defer p.Unlock()
 
+	var transportErr error
+
+	transportTouched := false
+
 	for key, val := range options {
 		if _, ok := OptTransports[key]; ok {
+			transportTouched = true
+
 			if p.options != nil {
 				delete(p.options, key)
 			}
 
 			err := p.resetTransport(key, val)
 			if err != nil {
-				p.transportErr = err
-				tlog.E(context.Background()).Err(err).Msgf("reset transport err (%v).", err)
-			} else {
-				p.transportErr = nil
+				transportErr = errors.Join(transportErr, err)
+
+				tlog.E(context.Background()).Err(err).Msgf("thttp failed to apply transport option: %v", err)
 			}
 
 			continue
@@ -333,6 +360,12 @@ func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]st
 		for key, val := range headers {
 			p.headers[key] = val
 		}
+	}
+
+	if transportErr != nil {
+		p.transportErr = transportErr
+	} else if transportTouched {
+		p.transportErr = nil
 	}
 
 	return p
@@ -390,7 +423,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 			return nil
 		} else {
-			return fmt.Errorf("thttp: invalid value for OptTransMaxIdleConns: expected int, got %T", val)
+			return fmt.Errorf("thttp: invalid OptTransMaxIdleConns value: want int, got %T", val)
 		}
 	}
 
@@ -401,7 +434,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 			return nil
 		} else {
-			return fmt.Errorf("thttp: invalid value for OptTransMaxIdleConnsPerHost: expected int, got %T", val)
+			return fmt.Errorf("thttp: invalid OptTransMaxIdleConnsPerHost value: want int, got %T", val)
 		}
 	}
 
@@ -412,7 +445,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 			return nil
 		} else {
-			return fmt.Errorf("thttp: invalid value for OptTransMaxConnsPerHost: expected int, got %T", val)
+			return fmt.Errorf("thttp: invalid OptTransMaxConnsPerHost value: want int, got %T", val)
 		}
 	}
 
@@ -425,7 +458,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 			return nil
 		}
 
-		return fmt.Errorf("thttp: invalid value for OptTransProxyFunc: expected ProxyFunc (func(*http.Request) (*url.URL, error)), got %T", val)
+		return fmt.Errorf("thttp: invalid OptTransProxyFunc value: want ProxyFunc (func(*http.Request) (*url.URL, error)), got %T", val)
 	} else if key == OptTransProxyUrl {
 		destProxy, ok := val.(string)
 		if ok == true {
@@ -444,7 +477,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 			return nil
 		} else {
-			return fmt.Errorf("thttp: invalid value for OptTransProxyUrl: expected string, got %T", val)
+			return fmt.Errorf("thttp: invalid OptTransProxyUrl value: want string, got %T", val)
 		}
 	}
 
@@ -464,7 +497,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 
 			return nil
 		} else {
-			return fmt.Errorf("thttp: invalid value for OptTransUnsafeTls: expected bool, got %T", val)
+			return fmt.Errorf("thttp: invalid OptTransUnsafeTls value: want bool, got %T", val)
 		}
 	}
 
@@ -473,7 +506,7 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 		if ok == true {
 			p.transport.TLSClientConfig = destTlsConfig
 		} else {
-			return fmt.Errorf("thttp: invalid value for OptTransTlsConfig: expected *tls.Config, got %T", val)
+			return fmt.Errorf("thttp: invalid OptTransTlsConfig value: want *tls.Config, got %T", val)
 		}
 	}
 
@@ -494,7 +527,7 @@ func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 		if err != nil {
 			p.transportErr = err
 
-			tlog.E(context.Background()).Err(err).Msgf("reset transport err (%v).",
+			tlog.E(context.Background()).Err(err).Msgf("thttp failed to apply transport option: %v",
 				err)
 		} else {
 			p.transportErr = nil
@@ -562,8 +595,38 @@ func (p *HttpClient) WithResponseHookFunc(option ResponseHookFunc) *HttpClient {
 
 // WithOptions applies multiple options in sequence.
 func (p *HttpClient) WithOptions(options map[int]interface{}) *HttpClient {
+	p.Lock()
+	defer p.Unlock()
+
+	var transportErr error
+	transportTouched := false
+
 	for key, val := range options {
-		p.WithOption(key, val)
+		if _, ok := OptTransports[key]; ok {
+			transportTouched = true
+
+			err := p.resetTransport(key, val)
+			if err != nil {
+				transportErr = errors.Join(transportErr, err)
+
+				tlog.E(context.Background()).Err(err).Msgf("thttp failed to apply transport option: %v",
+					err)
+			}
+
+			continue
+		}
+
+		if p.options == nil {
+			p.options = make(map[int]interface{})
+		}
+
+		p.options[key] = cloneOptionValue(key, val)
+	}
+
+	if transportErr != nil {
+		p.transportErr = transportErr
+	} else if transportTouched {
+		p.transportErr = nil
 	}
 
 	return p
@@ -608,9 +671,8 @@ func (p *HttpClient) WithHeaders(headers map[string]string) *HttpClient {
 }
 
 // Do executes an HTTP request: it merges client defaults with requestOption, builds an [http.Client] with
-// wrapped transport (logging, then retry), and returns a [Response]. When body is read into memory,
-// [http.Request.GetBody] and [http.Request.ContentLength] are set so retries can replay the payload without
-// buffering again in the retry layer.
+// wrapped transport (logging, then retry), and returns a [Response]. Request bodies are passed through as-is;
+// replay only happens when [http.Request.GetBody] is already available or the retry layer chooses to buffer.
 func (p *HttpClient) Do(ctx context.Context, method string, url string, requestOption *RequestOption, body io.Reader) (*Response, error) {
 	p.lazyInitTransport()
 
@@ -667,6 +729,11 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 		return nil, err
 	}
 
+	_, configured := options[OptCookieJar]
+	if !configured {
+		cookieJar = p.cookieJar
+	}
+
 	// redirect
 	redirect, err := prepareRedirect(options)
 	if err != nil {
@@ -685,7 +752,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	if ok == true {
 		destTimeout, ok := srcTimeout.(time.Duration)
 		if ok == false {
-			return nil, fmt.Errorf("thttp: invalid value for OptTimeout: expected time.Duration, got %T", srcTimeout)
+			return nil, fmt.Errorf("thttp: invalid OptTimeout value: want time.Duration, got %T", srcTimeout)
 		} else {
 			timeout = destTimeout
 		}
@@ -693,35 +760,9 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 
 	client.Timeout = timeout
 
-	var bodyBytes []byte
-
-	reuseBody := false
-
-	if body != nil {
-		reuseBody = true
-
-		var err error
-
-		bodyBytes, err = io.ReadAll(body)
-		if err != nil {
-			return nil, err
-		}
-
-		body = bytes.NewReader(bodyBytes)
-	}
-
 	request, err := prepareRequest(ctx, method, url, headers, body)
 	if err != nil {
 		return nil, err
-	}
-
-	if reuseBody {
-		payload := bodyBytes
-
-		request.ContentLength = int64(len(payload))
-		request.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(payload)), nil
-		}
 	}
 
 	// output debug info
@@ -729,7 +770,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 		dump, err := httputil.DumpRequestOut(request, true)
 
 		if err == nil {
-			tlog.I(ctx).Msgf("%s", dump)
+			tlog.I(ctx).Msgf("thttp outbound request dump:\n%s", dump)
 		}
 	}
 
@@ -761,8 +802,12 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 
 	if isAbnormal {
 		event := tlog.W(request.Context()).Err(err).Detailf("req.method: %s", request.Method).
-			Detailf("req.host: %s", request.Host).Detailf("req.url: %s", request.URL.String()).
-			Detailf("req.body: %s", string(bodyBytes))
+			Detailf("req.host: %s", request.Host).Detailf("req.url: %s", request.URL.String())
+
+		bodyBytes := snapshotRequestBody(request)
+		if bodyBytes != nil {
+			event = event.Detailf("req.body: %s", string(bodyBytes))
+		}
 
 		for key, vals := range request.Header {
 			event = event.Detailf("req.header.%s: %s", key, strings.Join(vals, ";"))
@@ -772,7 +817,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 			event = event.Detailf("resp.status code: %d", response.StatusCode)
 		}
 
-		event.Msg("http client abnormal log")
+		event.Msg("thttp request failed or returned HTTP status >= 400")
 	}
 
 	srcResponseHookFunc, ok := options[OptExtraResponseHookFunc]
@@ -803,7 +848,7 @@ func (p *HttpClient) send(ctx context.Context, method string, url string, reques
 	case _url.Values:
 		body = strings.NewReader(retParams.Encode())
 	default:
-		return nil, fmt.Errorf("thttp: unsupported body type for send: %T (supported: nil, []byte, string, *bytes.Reader, url.Values)", retParams)
+		return nil, fmt.Errorf("thttp: unsupported request body type %T; supported types: nil, []byte, string, *bytes.Reader, url.Values", retParams)
 	}
 
 	return p.Do(ctx, method, url, requestOption, body)

@@ -63,7 +63,7 @@ func baseRetryPolicy(resp *http.Response, err error) (bool, error) {
 	// errors and may relate to outages on the server side. This will catch
 	// invalid response codes as well, like 0 and 999.
 	if resp.StatusCode == 0 || (resp.StatusCode >= 500 && resp.StatusCode != http.StatusNotImplemented) {
-		return true, fmt.Errorf("thttp: server returned status %s (eligible for retry)", resp.Status)
+		return true, fmt.Errorf("thttp: retryable HTTP status %s", resp.Status)
 	}
 
 	return false, nil

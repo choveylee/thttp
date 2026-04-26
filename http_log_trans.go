@@ -19,7 +19,8 @@ type LogTransOption struct {
 	includeHeaders  bool
 }
 
-// NewLogTransOption returns defaults: slow-request logging enabled, 500 ms threshold, access logs disabled.
+// NewLogTransOption returns defaults: slow-request logging for eligible HTTP 200/404 responses enabled,
+// 500 ms threshold, access logs disabled.
 func NewLogTransOption() *LogTransOption {
 	return &LogTransOption{
 		enableSlowLog:  true,
@@ -31,7 +32,9 @@ func NewLogTransOption() *LogTransOption {
 	}
 }
 
-// WithSlowLog enables or disables logging when round-trip latency exceeds slowLatency.
+// WithSlowLog enables or disables logging when round-trip latency exceeds slowLatency for the
+// responses currently considered eligible by the transport (HTTP 200, plus HTTP 404 when
+// [LogTransOption.IgnoreNotFound] has not been enabled).
 func (p *LogTransOption) WithSlowLog(enableSlowLog bool, slowLatency time.Duration) *LogTransOption {
 	p.enableSlowLog = enableSlowLog
 	p.slowLatency = slowLatency
@@ -39,7 +42,7 @@ func (p *LogTransOption) WithSlowLog(enableSlowLog bool, slowLatency time.Durati
 	return p
 }
 
-// IgnoreNotFound suppresses slow logs when the response status is [http.StatusNotFound].
+// IgnoreNotFound controls whether HTTP 404 responses are excluded from slow-log eligibility.
 func (p *LogTransOption) IgnoreNotFound(ignoreNotFound bool) *LogTransOption {
 	p.ignoreNotFound = ignoreNotFound
 
@@ -94,7 +97,7 @@ func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			if latency > p.logTransOption.slowLatency {
 				tlog.I(req.Context()).Err(err).Detailf("req.method: %s", req.Method).
 					Detailf("req.host: %s", req.Host).Detailf("req.url: %s", req.URL.String()).
-					Detailf("latency_ms: %d", latency.Milliseconds()).Msg("slow log")
+					Detailf("latency_ms: %d", latency.Milliseconds()).Msg("thttp slow request")
 			}
 		}
 	}
@@ -117,7 +120,7 @@ func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 		}
 
-		event.Msg("access log")
+		event.Msg("thttp access log")
 	}
 
 	return resp, err

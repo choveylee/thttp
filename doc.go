@@ -9,7 +9,11 @@
 // Per-request overrides are expressed with [RequestOption] and merged into each
 // invocation of [HttpClient.Do].
 //
-// Errors returned by this package that describe invalid configuration or option
-// types use the "thttp:" prefix and, where applicable, include the dynamic type of
-// the offending value (via %T) to aid debugging.
+// Errors returned by this package use the "thttp:" prefix. Configuration and
+// option type mismatches follow a consistent "invalid <option> value: want
+// <type>, got <dynamic type>" style to make misconfiguration easier to spot.
+//
+// Structured log messages emitted by the built-in transports also use a
+// consistent "thttp ..." prefix, for example "thttp slow request" and
+// "thttp access log".
 package thttp

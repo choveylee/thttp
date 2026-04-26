@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	// DefaultRetryMaxCount is the default upper bound on retry attempts after the first request.
+	// DefaultRetryMaxCount is the default upper bound on total attempts, including the first request.
 	DefaultRetryMaxCount = 3
 	// DefaultRetryMinWaitTime is the default minimum backoff interval.
 	DefaultRetryMinWaitTime = time.Duration(100) * time.Millisecond
@@ -54,7 +54,7 @@ func NewRetryTransOption() *RetryTransOption {
 	}
 }
 
-// WithMaxCount sets the maximum number of retry attempts (including follow-up attempts after the first failure).
+// WithMaxCount sets the maximum number of total attempts, including the first request.
 func (p *RetryTransOption) WithMaxCount(maxCount int) *RetryTransOption {
 	p.retryMaxCount = maxCount
 

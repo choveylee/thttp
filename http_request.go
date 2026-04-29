@@ -20,6 +20,12 @@ type RequestOption struct {
 	sync.Mutex
 }
 
+type requestOptionSnapshot struct {
+	options map[int]interface{}
+	headers map[string]string
+	cookies []*http.Cookie
+}
+
 // NewRequestOption returns an empty [RequestOption] ready for configuration.
 func NewRequestOption() *RequestOption {
 	requestOption := &RequestOption{
@@ -31,6 +37,37 @@ func NewRequestOption() *RequestOption {
 	}
 
 	return requestOption
+}
+
+func (p *RequestOption) snapshot() requestOptionSnapshot {
+	if p == nil {
+		return requestOptionSnapshot{
+			options: make(map[int]interface{}),
+			headers: make(map[string]string),
+			cookies: make([]*http.Cookie, 0),
+		}
+	}
+
+	p.Lock()
+	defer p.Unlock()
+
+	options := make(map[int]interface{}, len(p.options))
+	for key, val := range p.options {
+		options[key] = val
+	}
+
+	headers := make(map[string]string, len(p.Headers))
+	for key, val := range p.Headers {
+		headers[key] = val
+	}
+
+	cookies := append(make([]*http.Cookie, 0, len(p.Cookies)), p.Cookies...)
+
+	return requestOptionSnapshot{
+		options: options,
+		headers: headers,
+		cookies: cookies,
+	}
 }
 
 // setOption stores a per-request option. Keys in [OptTransports] are ignored (transport is client-wide).

@@ -1,6 +1,6 @@
 # thttp
 
-Formal HTTP client utilities for Go, extending [`net/http`](https://pkg.go.dev/net/http) with composable [`RoundTripper`](https://pkg.go.dev/net/http#RoundTripper) layers, optional retries, structured logging, Prometheus-compatible request latency metrics, and request/response hooks.
+HTTP client utilities for Go that extend [`net/http`](https://pkg.go.dev/net/http) with composable [`RoundTripper`](https://pkg.go.dev/net/http#RoundTripper) layers, optional retries, structured logging, Prometheus-compatible request latency metrics, and request / response hooks.
 
 Module path: [`github.com/choveylee/thttp`](https://pkg.go.dev/github.com/choveylee/thttp).
 
@@ -48,11 +48,11 @@ Transport decoration order for an outgoing request: **retry (outer)** → **logg
 
 ## Errors and logs
 
-Errors returned by this package use the **`thttp:`** prefix. Configuration and option type mismatches follow a consistent style such as `thttp: invalid OptTimeout value: want time.Duration, got string`, which makes the offending option and expected type explicit.
+Errors returned by this package use the **`thttp:`** prefix. Configuration and option type mismatches follow a consistent format such as `thttp: invalid OptTimeout value: want time.Duration, got string`, which makes the offending option and expected type explicit.
 
-Built-in transport logs also use a consistent `thttp ...` message prefix. Typical messages include `thttp slow request`, `thttp access log`, `thttp outbound request dump`, and `thttp request failed or returned HTTP status >= 400`.
+Built-in transport logs also follow a consistent, descriptive style. Representative messages include `thttp slow request detected`, `thttp access log entry`, `thttp outbound request dump follows`, `thttp transport option application failed`, and `thttp request execution failed or returned HTTP status >= 400`.
 
-Transport-related failures from [`HttpClient.WithOption`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.WithOption), [`HttpClient.Defaults`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.Defaults), and [`HttpClient.WithOptions`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.WithOptions) are logged immediately; subsequent [`Do`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.Do) calls return the recorded error until a later transport update applies successfully.
+Transport-related failures from [`HttpClient.WithOption`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.WithOption), [`HttpClient.Defaults`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.Defaults), and [`HttpClient.WithOptions`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.WithOptions) are logged immediately. Subsequent [`Do`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.Do) calls return the recorded error until a later transport update applies successfully.
 
 [`RequestOption`](https://pkg.go.dev/github.com/choveylee/thttp#RequestOption) does not expose a generic option setter; use typed methods (e.g. [`WithLogTransOption`](https://pkg.go.dev/github.com/choveylee/thttp#RequestOption.WithLogTransOption)) so logging and retry options are always shallow-copied when stored.
 
@@ -97,7 +97,7 @@ defer resp.Body.Close()
 
 ## Documentation
 
-- **Package overview:** see [`doc.go`](doc.go) and [pkg.go.dev](https://pkg.go.dev/github.com/choveylee/thttp) after publishing.
+- **Package overview:** see [`doc.go`](doc.go) and [pkg.go.dev](https://pkg.go.dev/github.com/choveylee/thttp) after publication.
 - **Command line:** `go doc github.com/choveylee/thttp`
 
 ---

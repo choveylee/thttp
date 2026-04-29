@@ -19,8 +19,7 @@ type LogTransOption struct {
 	includeHeaders  bool
 }
 
-// NewLogTransOption returns defaults: slow-request logging for eligible HTTP 200/404 responses enabled,
-// 500 ms threshold, access logs disabled.
+// NewLogTransOption returns defaults: slow-request logging enabled, 500 ms threshold, access logs disabled.
 func NewLogTransOption() *LogTransOption {
 	return &LogTransOption{
 		enableSlowLog:  true,
@@ -32,9 +31,8 @@ func NewLogTransOption() *LogTransOption {
 	}
 }
 
-// WithSlowLog enables or disables logging when round-trip latency exceeds slowLatency for the
-// responses currently considered eligible by the transport (HTTP 200, plus HTTP 404 when
-// [LogTransOption.IgnoreNotFound] has not been enabled).
+// WithSlowLog enables or disables logging when round-trip latency exceeds slowLatency. Slow responses of any
+// HTTP status are eligible; [LogTransOption.IgnoreNotFound] can be used to suppress slow HTTP 404 logs.
 func (p *LogTransOption) WithSlowLog(enableSlowLog bool, slowLatency time.Duration) *LogTransOption {
 	p.enableSlowLog = enableSlowLog
 	p.slowLatency = slowLatency
@@ -42,7 +40,7 @@ func (p *LogTransOption) WithSlowLog(enableSlowLog bool, slowLatency time.Durati
 	return p
 }
 
-// IgnoreNotFound controls whether HTTP 404 responses are excluded from slow-log eligibility.
+// IgnoreNotFound controls whether slow HTTP 404 responses are excluded from slow-log eligibility.
 func (p *LogTransOption) IgnoreNotFound(ignoreNotFound bool) *LogTransOption {
 	p.ignoreNotFound = ignoreNotFound
 
@@ -79,6 +77,18 @@ var defaultLogTransOption = &LogTransOption{
 	includeHeaders:  false,
 }
 
+func shouldEmitSlowLog(resp *http.Response, err error, ignoreNotFound bool) bool {
+	if err != nil || resp == nil {
+		return true
+	}
+
+	if ignoreNotFound && resp.StatusCode == http.StatusNotFound {
+		return false
+	}
+
+	return true
+}
+
 // RoundTrip implements [http.RoundTripper].
 func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	startedAt := time.Now()
@@ -92,14 +102,18 @@ func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	// add slow log
-	if p.logTransOption.enableSlowLog == true {
-		if err == nil && (resp.StatusCode == http.StatusOK || (resp.StatusCode == http.StatusNotFound && p.logTransOption.ignoreNotFound == false)) {
-			if latency > p.logTransOption.slowLatency {
-				tlog.I(req.Context()).Err(err).Detailf("req.method: %s", req.Method).
-					Detailf("req.host: %s", req.Host).Detailf("req.url: %s", req.URL.String()).
-					Detailf("latency_ms: %d", latency.Milliseconds()).Msg("thttp slow request")
-			}
+	if p.logTransOption.enableSlowLog == true &&
+		latency > p.logTransOption.slowLatency &&
+		shouldEmitSlowLog(resp, err, p.logTransOption.ignoreNotFound) {
+		event := tlog.I(req.Context()).Err(err).Detailf("req.method: %s", req.Method).
+			Detailf("req.host: %s", req.Host).Detailf("req.url: %s", req.URL.String()).
+			Detailf("latency_ms: %d", latency.Milliseconds())
+
+		if resp != nil {
+			event = event.Detailf("resp.status code: %d", resp.StatusCode)
 		}
+
+		event.Msg("thttp slow request detected")
 	}
 
 	// add access log
@@ -120,7 +134,7 @@ func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 		}
 
-		event.Msg("thttp access log")
+		event.Msg("thttp access log entry")
 	}
 
 	return resp, err

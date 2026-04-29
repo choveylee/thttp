@@ -3,6 +3,7 @@ package thttp
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,7 +29,8 @@ var (
 // baseRetryPolicy implements the default retry eligibility rules shared by higher-level policies.
 func baseRetryPolicy(resp *http.Response, err error) (bool, error) {
 	if err != nil {
-		if val, ok := err.(*url.Error); ok {
+		var val *url.Error
+		if errors.As(err, &val) {
 			// Don't retry if the error was due to too many redirects.
 			if RedirectErrorReg.MatchString(val.Error()) {
 				return false, val
@@ -43,7 +46,8 @@ func baseRetryPolicy(resp *http.Response, err error) (bool, error) {
 				return false, val
 			}
 
-			if _, ok := val.Err.(x509.UnknownAuthorityError); ok {
+			var unknownAuthorityError x509.UnknownAuthorityError
+			if errors.As(val.Err, &unknownAuthorityError) {
 				return false, val
 			}
 		}
@@ -88,44 +92,72 @@ func DefaultRetryPolicy(ctx context.Context, resp *http.Response, err error) (bo
 func DefaultBackoff(minWaitTime, maxWaitTime time.Duration, attemptNum int, resp *http.Response) time.Duration {
 	if resp != nil {
 		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
-			if s, ok := resp.Header["Retry-After"]; ok {
-				if sleep, err := strconv.ParseInt(s[0], 10, 64); err == nil {
-					return time.Second * time.Duration(sleep)
+			if srcRetryAfter, ok := resp.Header["Retry-After"]; ok {
+				retryAfter, ok := parseRetryAfter(srcRetryAfter[0], time.Now())
+				if ok {
+					return retryAfter
 				}
 			}
 		}
 	}
 
-	mult := math.Pow(2, float64(attemptNum)) * float64(minWaitTime)
-	sleepTime := time.Duration(mult)
+	duration := math.Pow(2, float64(attemptNum)) * float64(minWaitTime)
 
-	if float64(sleepTime) != mult || sleepTime > maxWaitTime {
+	sleepTime := time.Duration(duration)
+
+	if float64(sleepTime) != duration || sleepTime > maxWaitTime {
 		sleepTime = maxWaitTime
 	}
 
 	return sleepTime
 }
 
-// LinearJitterBackoff applies linearly increasing delays with pseudo-random jitter between minWaitTime
-// and maxWaitTime to reduce synchronized retries. The resp parameter is unused.
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+
+	if sleep, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if sleep < 0 {
+			return 0, true
+		}
+
+		return time.Second * time.Duration(sleep), true
+	}
+
+	retryAt, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+
+	retryAfter := retryAt.Sub(now)
+	if retryAfter < 0 {
+		return 0, true
+	}
+
+	return retryAfter, true
+}
+
+// LinearJitterBackoff chooses a pseudo-random base delay between minWaitTime and maxWaitTime,
+// then multiplies it by the 1-based attempt number to produce a linearly increasing jittered
+// backoff. When maxWaitTime is not greater than minWaitTime, it falls back to
+// minWaitTime * attemptNum. The resp parameter is unused.
 func LinearJitterBackoff(minWaitTime, maxWaitTime time.Duration, attemptNum int, resp *http.Response) time.Duration {
 	// attemptNum always starts at zero but we want to start at 1 for multiplication
 	attemptNum++
 
 	if maxWaitTime <= minWaitTime {
-		// Unclear what to do here, or they are the same, so return minWaitTime *
-		// attemptNum
+		// When there is no valid jitter range, use minWaitTime scaled by the 1-based attempt count.
 		return minWaitTime * time.Duration(attemptNum)
 	}
 
-	// Seed rand; doing this every time is fine
-	rand := rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
+	// Seed randVal; doing this every time is fine
+	randVal := rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
 
-	// Pick a random number that lies somewhere between the minWaitTime and maxWaitTime and
-	// multiply by the attemptNum. attemptNum starts at zero so we always
-	// increment here. We first get a random percentage, then apply that to the
-	// difference between minWaitTime and maxWaitTime, and add to minWaitTime.
-	jitter := rand.Float64() * float64(maxWaitTime-minWaitTime)
+	// Pick a random base delay in [minWaitTime, maxWaitTime), then scale it by the
+	// 1-based attempt count to get a linearly increasing jittered delay.
+	jitter := randVal.Float64() * float64(maxWaitTime-minWaitTime)
 	jitterMin := int64(jitter) + int64(minWaitTime)
 
 	return time.Duration(jitterMin * int64(attemptNum))

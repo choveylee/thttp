@@ -3,6 +3,7 @@ package thttp
 import (
 	"compress/flate"
 	"compress/gzip"
+	"errors"
 	"io"
 	"net/http"
 )
@@ -15,7 +16,15 @@ type Response struct {
 // ToBytes reads and decompresses the response body when Content-Encoding is gzip or deflate,
 // returns the HTTP status code, raw body bytes, and any read or decompression error.
 func (p *Response) ToBytes() (int, []byte, error) {
+	if p == nil || p.Response == nil {
+		return 0, nil, errors.New("thttp: response is unavailable")
+	}
+
 	statusCode := p.StatusCode
+
+	if p.Body == nil {
+		return statusCode, nil, errors.New("thttp: response body is unavailable")
+	}
 
 	defer p.Body.Close()
 
@@ -34,7 +43,9 @@ func (p *Response) ToBytes() (int, []byte, error) {
 		reader = p.Body
 	}
 
-	defer reader.Close()
+	if reader != p.Body {
+		defer reader.Close()
+	}
 
 	body, err := io.ReadAll(reader)
 	if err != nil {

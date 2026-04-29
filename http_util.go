@@ -11,23 +11,26 @@ import (
 	"strings"
 )
 
-// appendParams appends URL-encoded query parameters, inserting "?" or "&" as required.
-func appendParams(url string, params url.Values) string {
+// appendParams appends URL-encoded query parameters while preserving any existing query string and fragment.
+func appendParams(rawURL string, params url.Values) string {
 	if len(params) == 0 {
-		return url
+		return rawURL
 	}
 
-	if strings.Contains(url, "?") == false {
-		url += "?"
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
 	}
 
-	if strings.HasSuffix(url, "?") || strings.HasSuffix(url, "&") {
-		url += params.Encode()
-	} else {
-		url += "&" + params.Encode()
+	query := parsedURL.Query()
+	for key, values := range params {
+		for _, value := range values {
+			query.Add(key, value)
+		}
 	}
+	parsedURL.RawQuery = query.Encode()
 
-	return url
+	return parsedURL.String()
 }
 
 // loadFormFile streams fileName into a multipart form file field named fieldName.

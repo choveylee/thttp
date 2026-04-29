@@ -145,6 +145,57 @@ func snapshotRequestBody(req *http.Request) []byte {
 	return data
 }
 
+// dumpDebugRequest builds a request snapshot for debug logging after hooks and cookie resolution.
+// When [http.Request.GetBody] is unavailable, the dump omits the body to avoid consuming the live stream.
+func dumpDebugRequest(req *http.Request, cookieJar http.CookieJar) []byte {
+	if req == nil {
+		return nil
+	}
+
+	debugReq := req.Clone(req.Context())
+	debugReq.Header = req.Header.Clone()
+
+	dumpBody := false
+	if req.Body != nil && req.Body != http.NoBody && req.GetBody != nil {
+		body, err := req.GetBody()
+		if err == nil {
+			debugReq.Body = body
+			defer debugReq.Body.Close()
+			dumpBody = true
+		} else {
+			debugReq.Body = nil
+		}
+	} else {
+		debugReq.Body = nil
+	}
+
+	if cookieJar != nil && debugReq.URL != nil {
+		for _, cookie := range cookieJar.Cookies(debugReq.URL) {
+			debugReq.AddCookie(cookie)
+		}
+	}
+
+	dump, err := httputil.DumpRequestOut(debugReq, dumpBody)
+	if err != nil {
+		return nil
+	}
+
+	return dump
+}
+
+type clientSnapshot struct {
+	options map[int]interface{}
+	headers map[string]string
+
+	transport *http.Transport
+
+	cookieJar http.CookieJar
+
+	transportErr error
+
+	withDebug bool
+}
+
 // defaultTransportDialContext adapts a [net.Dialer] for use as [http.Transport.DialContext].
 func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
 	return dialer.DialContext
@@ -182,34 +233,43 @@ func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (ht
 	return desTransport, nil
 }
 
-// prepareCookieJar interprets [OptCookieJar]: true allocates a default jar, [http.CookieJar] is used as-is,
-// false or absent yields nil. Any other type returns an error using "invalid OptCookieJar value" wording.
-func prepareCookieJar(options map[int]interface{}) (http.CookieJar, error) {
+// prepareCookieJar interprets [OptCookieJar]: absent or true reuses defaultJar when available (otherwise allocates a
+// new jar), [http.CookieJar] is used as-is, and false disables cookies for the request. Any other type returns an
+// error using "invalid OptCookieJar value" wording.
+func prepareCookieJar(options map[int]interface{}, defaultJar http.CookieJar) (http.CookieJar, error) {
 	srcOptCookieJar, ok := options[OptCookieJar]
-	if ok == true {
-		optCookieJar, ok := srcOptCookieJar.(bool)
-		if ok == true {
-			// default cookieJar
-			if optCookieJar == true {
-				// TODO: PublicSuffixList
-				jar, err := cookiejar.New(nil)
-				if err != nil {
-					return nil, err
-				}
-
-				return jar, nil
-			}
-		} else {
-			jar, ok := srcOptCookieJar.(http.CookieJar)
-			if ok == false {
-				return nil, fmt.Errorf("thttp: invalid OptCookieJar value: want bool or http.CookieJar, got %T", srcOptCookieJar)
-			}
-
-			return jar, nil
+	if ok == false {
+		if defaultJar != nil {
+			return defaultJar, nil
 		}
+
+		return nil, nil
 	}
 
-	return nil, nil
+	optCookieJar, ok := srcOptCookieJar.(bool)
+	if ok == true {
+		if optCookieJar == false {
+			return nil, nil
+		}
+
+		if defaultJar != nil {
+			return defaultJar, nil
+		}
+
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			return nil, err
+		}
+
+		return jar, nil
+	}
+
+	jar, ok := srcOptCookieJar.(http.CookieJar)
+	if ok == false {
+		return nil, fmt.Errorf("thttp: invalid OptCookieJar value: want bool or http.CookieJar, got %T", srcOptCookieJar)
+	}
+
+	return jar, nil
 }
 
 // prepareRedirect returns the redirect handler from [OptRedirectPolicy] when set, or nil if unset.
@@ -257,10 +317,41 @@ type HttpClient struct {
 	sync.RWMutex
 }
 
+// newClientSnapshot copies the request-relevant client state under [HttpClient.RLock] so [HttpClient.Do] can release the lock
+// before invoking hooks or performing network I/O.
+func (p *HttpClient) newClientSnapshot() clientSnapshot {
+	p.RLock()
+	defer p.RUnlock()
+
+	options := make(map[int]interface{}, len(p.options))
+	for key, val := range p.options {
+		options[key] = val
+	}
+
+	headers := make(map[string]string, len(p.headers))
+	for key, val := range p.headers {
+		headers[key] = val
+	}
+
+	return clientSnapshot{
+		options: options,
+		headers: headers,
+
+		transport: p.transport,
+
+		cookieJar: p.cookieJar,
+
+		transportErr: p.transportErr,
+
+		withDebug: p.withDebug,
+	}
+}
+
 // NewHttpClient returns an [HttpClient] with a fresh transport, 30-second connect and deadline timeouts,
 // and a default cookie jar when [cookiejar.New] succeeds.
-// A zero [HttpClient] is usable: the first [HttpClient.Do] or [HttpClient.Transport] runs [HttpClient.lazyInitTransport];
-// transport [HttpClient.WithOption] / [HttpClient.Defaults] use [HttpClient.ensureTransportLocked] under [HttpClient.Lock].
+// A zero [HttpClient] is usable: the first [HttpClient.Do] or [HttpClient.Transport] runs [HttpClient.lazyInitTransport]
+// to initialize the transport and default cookie jar; transport [HttpClient.WithOption] / [HttpClient.Defaults] use
+// [HttpClient.ensureTransportLocked] under [HttpClient.Lock].
 func NewHttpClient() *HttpClient {
 	httpClient := &HttpClient{
 		options: make(map[int]interface{}),
@@ -325,11 +416,12 @@ func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]st
 
 	var transportErr error
 
-	transportTouched := false
+	transportChanged := false
 
 	for key, val := range options {
-		if _, ok := OptTransports[key]; ok {
-			transportTouched = true
+		_, ok := OptTransports[key]
+		if ok {
+			transportChanged = true
 
 			if p.options != nil {
 				delete(p.options, key)
@@ -339,7 +431,7 @@ func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]st
 			if err != nil {
 				transportErr = errors.Join(transportErr, err)
 
-				tlog.E(context.Background()).Err(err).Msgf("thttp failed to apply transport option: %v", err)
+				tlog.E(context.Background()).Err(err).Msgf("thttp transport option application failed: %v", err)
 			}
 
 			continue
@@ -358,13 +450,13 @@ func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]st
 		}
 
 		for key, val := range headers {
-			p.headers[key] = val
+			p.headers[strings.ToLower(key)] = val
 		}
 	}
 
 	if transportErr != nil {
 		p.transportErr = transportErr
-	} else if transportTouched {
+	} else if transportChanged {
 		p.transportErr = nil
 	}
 
@@ -391,6 +483,13 @@ func (p *HttpClient) lazyInitTransport() {
 		if p.transport == nil {
 			p.transport = newDefaultTransport()
 		}
+
+		if p.cookieJar == nil {
+			cookieJar, err := cookiejar.New(nil)
+			if err == nil {
+				p.cookieJar = cookieJar
+			}
+		}
 	})
 }
 
@@ -416,44 +515,50 @@ func (p *HttpClient) ensureTransportLocked() {
 func (p *HttpClient) resetTransport(key int, val interface{}) error {
 	p.ensureTransportLocked()
 
+	transport := p.transport.Clone()
+
 	if key == OptTransMaxIdleConns {
 		destMaxIdleConns, ok := val.(int)
 		if ok == true {
-			p.transport.MaxIdleConns = destMaxIdleConns
+			transport.MaxIdleConns = destMaxIdleConns
+			p.transport = transport
 
 			return nil
-		} else {
-			return fmt.Errorf("thttp: invalid OptTransMaxIdleConns value: want int, got %T", val)
 		}
+
+		return fmt.Errorf("thttp: invalid OptTransMaxIdleConns value: want int, got %T", val)
 	}
 
 	if key == OptTransMaxIdleConnsPerHost {
 		destMaxIdleConnsPerHost, ok := val.(int)
 		if ok == true {
-			p.transport.MaxIdleConnsPerHost = destMaxIdleConnsPerHost
+			transport.MaxIdleConnsPerHost = destMaxIdleConnsPerHost
+			p.transport = transport
 
 			return nil
-		} else {
-			return fmt.Errorf("thttp: invalid OptTransMaxIdleConnsPerHost value: want int, got %T", val)
 		}
+
+		return fmt.Errorf("thttp: invalid OptTransMaxIdleConnsPerHost value: want int, got %T", val)
 	}
 
 	if key == OptTransMaxConnsPerHost {
 		destMaxConnsPerHost, ok := val.(int)
 		if ok == true {
-			p.transport.MaxConnsPerHost = destMaxConnsPerHost
+			transport.MaxConnsPerHost = destMaxConnsPerHost
+			p.transport = transport
 
 			return nil
-		} else {
-			return fmt.Errorf("thttp: invalid OptTransMaxConnsPerHost value: want int, got %T", val)
 		}
+
+		return fmt.Errorf("thttp: invalid OptTransMaxConnsPerHost value: want int, got %T", val)
 	}
 
 	// proxy
 	if key == OptTransProxyFunc {
 		destProxyFunc, ok := val.(ProxyFunc)
 		if ok == true {
-			p.transport.Proxy = destProxyFunc
+			transport.Proxy = destProxyFunc
+			p.transport = transport
 
 			return nil
 		}
@@ -473,12 +578,13 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 				return err
 			}
 
-			p.transport.Proxy = http.ProxyURL(proxyUrl)
+			transport.Proxy = http.ProxyURL(proxyUrl)
+			p.transport = transport
 
 			return nil
-		} else {
-			return fmt.Errorf("thttp: invalid OptTransProxyUrl value: want string, got %T", val)
 		}
+
+		return fmt.Errorf("thttp: invalid OptTransProxyUrl value: want string, got %T", val)
 	}
 
 	if key == OptTransUnsafeTls {
@@ -486,25 +592,27 @@ func (p *HttpClient) resetTransport(key int, val interface{}) error {
 		if ok == true {
 			unsafeTls := destUnsafeTls
 
-			tlsConfig := p.transport.TLSClientConfig
+			tlsConfig := transport.TLSClientConfig
 
 			if tlsConfig == nil {
 				tlsConfig = &tls.Config{}
-				p.transport.TLSClientConfig = tlsConfig
+				transport.TLSClientConfig = tlsConfig
 			}
 
 			tlsConfig.InsecureSkipVerify = unsafeTls
+			p.transport = transport
 
 			return nil
-		} else {
-			return fmt.Errorf("thttp: invalid OptTransUnsafeTls value: want bool, got %T", val)
 		}
+
+		return fmt.Errorf("thttp: invalid OptTransUnsafeTls value: want bool, got %T", val)
 	}
 
 	if key == OptTransTlsConfig {
 		destTlsConfig, ok := val.(*tls.Config)
 		if ok == true {
-			p.transport.TLSClientConfig = destTlsConfig
+			transport.TLSClientConfig = destTlsConfig
+			p.transport = transport
 		} else {
 			return fmt.Errorf("thttp: invalid OptTransTlsConfig value: want *tls.Config, got %T", val)
 		}
@@ -527,7 +635,7 @@ func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 		if err != nil {
 			p.transportErr = err
 
-			tlog.E(context.Background()).Err(err).Msgf("thttp failed to apply transport option: %v",
+			tlog.E(context.Background()).Err(err).Msgf("thttp transport option application failed: %v",
 				err)
 		} else {
 			p.transportErr = nil
@@ -599,17 +707,19 @@ func (p *HttpClient) WithOptions(options map[int]interface{}) *HttpClient {
 	defer p.Unlock()
 
 	var transportErr error
-	transportTouched := false
+
+	transportChanged := false
 
 	for key, val := range options {
-		if _, ok := OptTransports[key]; ok {
-			transportTouched = true
+		_, ok := OptTransports[key]
+		if ok {
+			transportChanged = true
 
 			err := p.resetTransport(key, val)
 			if err != nil {
 				transportErr = errors.Join(transportErr, err)
 
-				tlog.E(context.Background()).Err(err).Msgf("thttp failed to apply transport option: %v",
+				tlog.E(context.Background()).Err(err).Msgf("thttp transport option application failed: %v",
 					err)
 			}
 
@@ -625,7 +735,7 @@ func (p *HttpClient) WithOptions(options map[int]interface{}) *HttpClient {
 
 	if transportErr != nil {
 		p.transportErr = transportErr
-	} else if transportTouched {
+	} else if transportChanged {
 		p.transportErr = nil
 	}
 
@@ -676,65 +786,39 @@ func (p *HttpClient) WithHeaders(headers map[string]string) *HttpClient {
 func (p *HttpClient) Do(ctx context.Context, method string, url string, requestOption *RequestOption, body io.Reader) (*Response, error) {
 	p.lazyInitTransport()
 
-	p.RLock()
-	defer p.RUnlock()
-
-	if p.transportErr != nil {
-		return nil, p.transportErr
+	snapshot := p.newClientSnapshot()
+	if snapshot.transportErr != nil {
+		return nil, snapshot.transportErr
 	}
 
-	// prepare all request configs
-	// merge options
-	options := make(map[int]interface{})
-
-	for key, val := range p.options {
-		options[key] = val
-	}
-
-	if requestOption != nil {
-		for key, val := range requestOption.options {
-			options[key] = val
-		}
-	}
-
-	// merge headers
-	headers := make(map[string]string)
-
-	for key, val := range p.headers {
-		headers[key] = val
-	}
-
-	if requestOption != nil {
-		for key, val := range requestOption.Headers {
-			headers[key] = val
-		}
-	}
-
-	// set cookies
+	options := snapshot.options
+	headers := snapshot.headers
 	cookies := make([]*http.Cookie, 0)
 
 	if requestOption != nil {
-		cookies = requestOption.Cookies
+		requestSnapshot := requestOption.snapshot()
+
+		for key, val := range requestSnapshot.options {
+			options[key] = val
+		}
+
+		for key, val := range requestSnapshot.headers {
+			headers[key] = val
+		}
+
+		cookies = requestSnapshot.cookies
 	}
 
-	// transport
-	transport, err := wrapTransport(p.transport, options)
+	transport, err := wrapTransport(snapshot.transport, options)
 	if err != nil {
 		return nil, err
 	}
 
-	// cookieJar
-	cookieJar, err := prepareCookieJar(options)
+	cookieJar, err := prepareCookieJar(options, snapshot.cookieJar)
 	if err != nil {
 		return nil, err
 	}
 
-	_, configured := options[OptCookieJar]
-	if !configured {
-		cookieJar = p.cookieJar
-	}
-
-	// redirect
 	redirect, err := prepareRedirect(options)
 	if err != nil {
 		return nil, err
@@ -753,9 +837,9 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 		destTimeout, ok := srcTimeout.(time.Duration)
 		if ok == false {
 			return nil, fmt.Errorf("thttp: invalid OptTimeout value: want time.Duration, got %T", srcTimeout)
-		} else {
-			timeout = destTimeout
 		}
+
+		timeout = destTimeout
 	}
 
 	client.Timeout = timeout
@@ -765,16 +849,6 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 		return nil, err
 	}
 
-	// output debug info
-	if p.withDebug == true {
-		dump, err := httputil.DumpRequestOut(request, true)
-
-		if err == nil {
-			tlog.I(ctx).Msgf("thttp outbound request dump:\n%s", dump)
-		}
-	}
-
-	// cookieJar is not nil
 	if cookieJar != nil {
 		cookieJar.SetCookies(request.URL, cookies)
 	} else {
@@ -788,6 +862,13 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 		requestHookFunc, ok := srcRequestHookFunc.(RequestHookFunc)
 		if ok == true {
 			requestHookFunc(client, request)
+		}
+	}
+
+	if snapshot.withDebug == true {
+		dump := dumpDebugRequest(request, cookieJar)
+		if dump != nil {
+			tlog.I(ctx).Msgf("thttp outbound request dump follows:\n%s", dump)
 		}
 	}
 
@@ -817,7 +898,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 			event = event.Detailf("resp.status code: %d", response.StatusCode)
 		}
 
-		event.Msg("thttp request failed or returned HTTP status >= 400")
+		event.Msg("thttp request execution failed or returned HTTP status >= 400")
 	}
 
 	srcResponseHookFunc, ok := options[OptExtraResponseHookFunc]
@@ -826,6 +907,10 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 		if ok == true {
 			responseHookFunc(response, err)
 		}
+	}
+
+	if response == nil {
+		return nil, err
 	}
 
 	return &Response{response}, err
@@ -986,6 +1071,7 @@ type FormData struct {
 func (p *HttpClient) PostMultipartEx(ctx context.Context, url string, requestOption *RequestOption, params []*FormData) (*Response, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
+	defer func() { _ = writer.Close() }()
 
 	for _, formData := range params {
 		key := formData.Key

@@ -10,12 +10,12 @@
 // invocation of [HttpClient.Do].
 //
 // Errors returned by this package use the "thttp:" prefix. Configuration and
-// option type mismatches follow a consistent "invalid <option> value: want
-// <type>, got <dynamic type>" format so that misconfiguration can be identified
+// option type mismatches follow the consistent form "invalid <option> value:
+// want <type>, got <dynamic type>" so that misconfiguration can be identified
 // quickly.
 //
-// Structured log messages emitted by the built-in transports also follow a
-// consistent, descriptive style. Representative messages include
-// "thttp slow request detected", "thttp access log entry", and
-// "thttp request execution failed or returned HTTP status >= 400".
+// Structured log messages emitted by the built-in transports use a consistent,
+// descriptive style. Representative messages include "thttp slow request
+// observed", "thttp request access log entry", and
+// "thttp request failed or returned HTTP status >= 400".
 package thttp

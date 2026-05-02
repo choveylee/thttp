@@ -17,7 +17,7 @@ type Response struct {
 // returns the HTTP status code, raw body bytes, and any read or decompression error.
 func (p *Response) ToBytes() (int, []byte, error) {
 	if p == nil || p.Response == nil {
-		return 0, nil, errors.New("thttp: response is unavailable")
+		return 0, nil, errors.New("thttp: response object is unavailable")
 	}
 
 	statusCode := p.StatusCode

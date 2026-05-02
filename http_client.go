@@ -431,7 +431,7 @@ func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]st
 			if err != nil {
 				transportErr = errors.Join(transportErr, err)
 
-				tlog.E(context.Background()).Err(err).Msgf("thttp transport option application failed: %v", err)
+				tlog.E(context.Background()).Err(err).Msgf("thttp transport option update failed: %v", err)
 			}
 
 			continue
@@ -635,7 +635,7 @@ func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
 		if err != nil {
 			p.transportErr = err
 
-			tlog.E(context.Background()).Err(err).Msgf("thttp transport option application failed: %v",
+			tlog.E(context.Background()).Err(err).Msgf("thttp transport option update failed: %v",
 				err)
 		} else {
 			p.transportErr = nil
@@ -719,7 +719,7 @@ func (p *HttpClient) WithOptions(options map[int]interface{}) *HttpClient {
 			if err != nil {
 				transportErr = errors.Join(transportErr, err)
 
-				tlog.E(context.Background()).Err(err).Msgf("thttp transport option application failed: %v",
+				tlog.E(context.Background()).Err(err).Msgf("thttp transport option update failed: %v",
 					err)
 			}
 
@@ -868,7 +868,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 	if snapshot.withDebug == true {
 		dump := dumpDebugRequest(request, cookieJar)
 		if dump != nil {
-			tlog.I(ctx).Msgf("thttp outbound request dump follows:\n%s", dump)
+			tlog.I(ctx).Msgf("thttp outbound request dump:\n%s", dump)
 		}
 	}
 
@@ -898,7 +898,7 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 			event = event.Detailf("resp.status code: %d", response.StatusCode)
 		}
 
-		event.Msg("thttp request execution failed or returned HTTP status >= 400")
+		event.Msg("thttp request failed or returned HTTP status >= 400")
 	}
 
 	srcResponseHookFunc, ok := options[OptExtraResponseHookFunc]

@@ -50,7 +50,7 @@ Transport decoration order for an outgoing request: **retry (outer)** → **logg
 
 Errors returned by this package use the **`thttp:`** prefix. Configuration and option type mismatches follow a consistent format such as `thttp: invalid OptTimeout value: want time.Duration, got string`, which makes the offending option and expected type explicit.
 
-Built-in transport logs also follow a consistent, descriptive style. Representative messages include `thttp slow request detected`, `thttp access log entry`, `thttp outbound request dump follows`, `thttp transport option application failed`, and `thttp request execution failed or returned HTTP status >= 400`.
+Built-in transport logs use a consistent, descriptive style. Representative messages include `thttp slow request observed`, `thttp request access log entry`, `thttp outbound request dump`, `thttp transport option update failed`, and `thttp request failed or returned HTTP status >= 400`.
 
 Transport-related failures from [`HttpClient.WithOption`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.WithOption), [`HttpClient.Defaults`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.Defaults), and [`HttpClient.WithOptions`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.WithOptions) are logged immediately. Subsequent [`Do`](https://pkg.go.dev/github.com/choveylee/thttp#HttpClient.Do) calls return the recorded error until a later transport update applies successfully.
 

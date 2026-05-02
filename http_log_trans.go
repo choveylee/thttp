@@ -113,7 +113,7 @@ func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			event = event.Detailf("resp.status code: %d", resp.StatusCode)
 		}
 
-		event.Msg("thttp slow request detected")
+		event.Msg("thttp slow request observed")
 	}
 
 	// add access log
@@ -134,7 +134,7 @@ func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			}
 		}
 
-		event.Msg("thttp access log entry")
+		event.Msg("thttp request access log entry")
 	}
 
 	return resp, err

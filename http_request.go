@@ -1,7 +1,9 @@
 package thttp
 
 import (
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -11,25 +13,27 @@ import (
 // Per-request option keys must be set only through typed helpers (e.g. [RequestOption.WithLogTransOption]);
 // there is no generic option setter so [*LogTransOption] / [*RetryTransOption] are always shallow-copied when stored.
 type RequestOption struct {
-	options map[int]interface{}
+	optionMap map[int]any
 
+	// Headers contains explicit header overrides. Use the setters when sharing options.
 	Headers map[string]string
 
+	// Cookies contains scoped cookies for the outgoing request and its redirects.
 	Cookies []*http.Cookie
 
 	sync.Mutex
 }
 
 type requestOptionSnapshot struct {
-	options map[int]interface{}
-	headers map[string]string
-	cookies []*http.Cookie
+	optionMap map[int]any
+	headerMap map[string]string
+	cookies   []*http.Cookie
 }
 
 // NewRequestOption returns an empty [RequestOption] ready for configuration.
 func NewRequestOption() *RequestOption {
 	requestOption := &RequestOption{
-		options: make(map[int]interface{}),
+		optionMap: make(map[int]any),
 
 		Headers: make(map[string]string),
 
@@ -39,51 +43,36 @@ func NewRequestOption() *RequestOption {
 	return requestOption
 }
 
+// snapshot copies the options used by one request under the options lock.
 func (p *RequestOption) snapshot() requestOptionSnapshot {
-	if p == nil {
-		return requestOptionSnapshot{
-			options: make(map[int]interface{}),
-			headers: make(map[string]string),
-			cookies: make([]*http.Cookie, 0),
-		}
-	}
-
 	p.Lock()
 	defer p.Unlock()
 
-	options := make(map[int]interface{}, len(p.options))
-	for key, val := range p.options {
-		options[key] = val
+	optionMap := maps.Clone(p.optionMap)
+	headerMap := make(map[string]string, len(p.Headers))
+	for headerName, value := range p.Headers {
+		headerMap[strings.ToLower(headerName)] = value
 	}
 
-	headers := make(map[string]string, len(p.Headers))
-	for key, val := range p.Headers {
-		headers[key] = val
+	snapshot := requestOptionSnapshot{
+		optionMap: optionMap,
+		headerMap: headerMap,
+		cookies:   slices.Clone(p.Cookies),
 	}
 
-	cookies := append(make([]*http.Cookie, 0, len(p.Cookies)), p.Cookies...)
-
-	return requestOptionSnapshot{
-		options: options,
-		headers: headers,
-		cookies: cookies,
-	}
+	return snapshot
 }
 
-// setOption stores a per-request option. Keys in [OptTransports] are ignored (transport is client-wide).
-func (p *RequestOption) setOption(key int, val interface{}) *RequestOption {
+// setOption stores a typed per-request option under the options lock.
+func (p *RequestOption) setOption(key int, value any) *RequestOption {
 	p.Lock()
 	defer p.Unlock()
 
-	if _, skip := OptTransports[key]; skip {
-		return p
+	if p.optionMap == nil {
+		p.optionMap = make(map[int]any)
 	}
 
-	if p.options == nil {
-		p.options = make(map[int]interface{})
-	}
-
-	p.options[key] = cloneOptionValue(key, val)
+	p.optionMap[key] = cloneOptionValue(key, value)
 
 	return p
 }
@@ -103,7 +92,7 @@ func (p *RequestOption) WithLogTransOption(option *LogTransOption) *RequestOptio
 	return p.setOption(OptTransLog, option)
 }
 
-// WithCookieJar sets the cookie jar for this request ([OptCookieJar]).
+// WithCookieJar sets the cookie jar for this request. Nil disables stored cookies.
 func (p *RequestOption) WithCookieJar(jar http.CookieJar) *RequestOption {
 	return p.setOption(OptCookieJar, jar)
 }
@@ -123,18 +112,9 @@ func (p *RequestOption) WithResponseHookFunc(option ResponseHookFunc) *RequestOp
 	return p.setOption(OptExtraResponseHookFunc, option)
 }
 
-// WithHeader sets a header for this request (key is stored in lowercase).
-func (p *RequestOption) WithHeader(key string, val string) *RequestOption {
-	p.Lock()
-	defer p.Unlock()
-
-	if p.Headers == nil {
-		p.Headers = make(map[string]string)
-	}
-
-	p.Headers[strings.ToLower(key)] = val
-
-	return p
+// WithHeader sets a header for this request.
+func (p *RequestOption) WithHeader(key string, value string) *RequestOption {
+	return p.WithHeaders(map[string]string{key: value})
 }
 
 // WithReferer sets the Referer header for this request.
@@ -152,26 +132,28 @@ func (p *RequestOption) WithContentType(val string) *RequestOption {
 	return p.WithHeader("content-type", val)
 }
 
-// WithHeaders merges multiple headers for this request.
-func (p *RequestOption) WithHeaders(headers map[string]string) *RequestOption {
-	for key, val := range headers {
-		p.WithHeader(key, val)
+// WithHeaders merges headers for this request under one lock.
+func (p *RequestOption) WithHeaders(headerMap map[string]string) *RequestOption {
+	p.Lock()
+	defer p.Unlock()
+
+	if p.Headers == nil {
+		p.Headers = make(map[string]string, len(headerMap))
+	}
+
+	for headerName, value := range headerMap {
+		p.Headers[strings.ToLower(headerName)] = value
 	}
 
 	return p
 }
 
-// WithCookie appends a single cookie to the request.
+// WithCookie appends a scoped cookie for the request.
 func (p *RequestOption) WithCookie(cookie *http.Cookie) *RequestOption {
-	p.Lock()
-	defer p.Unlock()
-
-	p.Cookies = append(p.Cookies, cookie)
-
-	return p
+	return p.WithCookies(cookie)
 }
 
-// WithCookies appends multiple cookies to the request.
+// WithCookies appends scoped cookies for the request.
 func (p *RequestOption) WithCookies(cookies ...*http.Cookie) *RequestOption {
 	p.Lock()
 	defer p.Unlock()

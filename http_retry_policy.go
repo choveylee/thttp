@@ -2,11 +2,12 @@ package thttp
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"math"
-	"math/rand"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -26,104 +27,95 @@ var (
 	NotTrustedErrorReg = regexp.MustCompile(`certificate is not trusted`)
 )
 
-// baseRetryPolicy implements the default retry eligibility rules shared by higher-level policies.
-func baseRetryPolicy(resp *http.Response, err error) (bool, error) {
+// DefaultRetryPolicy retries transport failures, HTTP 429 and most 5xx responses.
+// Cancellation and known permanent transport errors stop retries.
+func DefaultRetryPolicy(ctx context.Context, response *http.Response, err error) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
 	if err != nil {
-		var val *url.Error
-		if errors.As(err, &val) {
-			// Don't retry if the error was due to too many redirects.
-			if RedirectErrorReg.MatchString(val.Error()) {
-				return false, val
-			}
-
-			// Don't retry if the error was due to an invalid protocol scheme.
-			if SchemeErrorReg.MatchString(val.Error()) {
-				return false, val
-			}
-
-			// Don't retry if the error was due to TLS cert verification failure.
-			if NotTrustedErrorReg.MatchString(val.Error()) {
-				return false, val
-			}
-
-			var unknownAuthorityError x509.UnknownAuthorityError
-			if errors.As(val.Err, &unknownAuthorityError) {
-				return false, val
-			}
-		}
-
-		return true, nil
+		return isRetryableTransportError(err), nil
 	}
 
-	// 429 Too Many Requests is recoverable. Sometimes the server puts
-	// a Retry-After response header to indicate when the server is
-	// available to start processing request from client.
-	if resp.StatusCode == http.StatusTooManyRequests {
-		return true, nil
+	if response == nil {
+		return false, nil
 	}
 
-	// Check the response code. We retry on 500-range responses to allow
-	// the server time to recover, as 500's are typically not permanent
-	// errors and may relate to outages on the server side. This will catch
-	// invalid response codes as well, like 0 and 999.
-	if resp.StatusCode == 0 || (resp.StatusCode >= 500 && resp.StatusCode != http.StatusNotImplemented) {
-		return true, fmt.Errorf("thttp: retryable HTTP status %s", resp.Status)
-	}
+	status := response.StatusCode
 
-	return false, nil
+	return status == http.StatusTooManyRequests || (status >= 500 && status <= 599 && status != http.StatusNotImplemented), nil
 }
 
-// DefaultRetryPolicy decides whether to retry after a round trip. It returns false when the context
-// is canceled or deadlined; otherwise it applies the same eligibility rules as the internal base policy.
-func DefaultRetryPolicy(ctx context.Context, resp *http.Response, err error) (bool, error) {
-	// do not retry on context.Canceled or context.DeadlineExceeded
-	if ctx.Err() != nil {
-		return false, ctx.Err()
+// isRetryableTransportError excludes failures that a second attempt cannot fix.
+func isRetryableTransportError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, http.ErrSchemeMismatch) {
+		return false
 	}
 
-	// don't propagate other errors
-	retryFlag, _ := baseRetryPolicy(resp, err)
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) && dnsError.IsNotFound {
+		return false
+	}
 
-	return retryFlag, nil
+	var verificationError *tls.CertificateVerificationError
+	var authorityError x509.UnknownAuthorityError
+	var hostnameError x509.HostnameError
+	var certificateError x509.CertificateInvalidError
+	if errors.As(err, &verificationError) || errors.As(err, &authorityError) ||
+		errors.As(err, &hostnameError) || errors.As(err, &certificateError) {
+		return false
+	}
+
+	// Match net/http error text against the cause, excluding the URL itself.
+	var urlError *url.Error
+	if errors.As(err, &urlError) && urlError.Err != nil {
+		err = urlError.Err
+	}
+
+	message := err.Error()
+
+	return !RedirectErrorReg.MatchString(message) && !SchemeErrorReg.MatchString(message) && !NotTrustedErrorReg.MatchString(message) &&
+		!strings.HasPrefix(message, "net/http: invalid ")
 }
 
-// DefaultBackoff performs exponential backoff capped at maxWaitTime, and honors Retry-After for
-// HTTP 429 and 503 responses when present.
-func DefaultBackoff(minWaitTime, maxWaitTime time.Duration, attemptNum int, resp *http.Response) time.Duration {
-	if resp != nil {
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
-			if srcRetryAfter, ok := resp.Header["Retry-After"]; ok {
-				retryAfter, ok := parseRetryAfter(srcRetryAfter[0], time.Now())
-				if ok {
-					return retryAfter
-				}
-			}
+// DefaultBackoff performs exponential backoff capped at maxWaitTime. A valid
+// Retry-After on HTTP 429 or 503 takes precedence over the local schedule.
+func DefaultBackoff(minWaitTime, maxWaitTime time.Duration, attemptNum int, response *http.Response) time.Duration {
+	if response != nil && (response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusServiceUnavailable) {
+		retryAfter, ok := parseRetryAfter(response.Header.Get("Retry-After"), time.Now())
+		if ok {
+			return retryAfter
 		}
 	}
 
-	duration := math.Pow(2, float64(attemptNum)) * float64(minWaitTime)
-
-	sleepTime := time.Duration(duration)
-
-	if float64(sleepTime) != duration || sleepTime > maxWaitTime {
-		sleepTime = maxWaitTime
+	if minWaitTime <= 0 || maxWaitTime <= 0 {
+		return 0
 	}
 
-	return sleepTime
+	shift := max(attemptNum, 0)
+	if shift >= 63 || minWaitTime > maxWaitTime>>shift {
+		return maxWaitTime
+	}
+
+	return minWaitTime << shift
 }
 
+// parseRetryAfter accepts HTTP dates and delay-seconds without wrapping long delays.
 func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return 0, false
 	}
 
-	if sleep, err := strconv.ParseInt(value, 10, 64); err == nil {
-		if sleep < 0 {
-			return 0, true
+	seconds, err := strconv.ParseUint(value, 10, 64)
+	digitsOnly := strings.Trim(value, "0123456789") == ""
+	if err == nil || (digitsOnly && errors.Is(err, strconv.ErrRange)) {
+		if seconds > uint64(math.MaxInt64/int64(time.Second)) {
+			return time.Duration(math.MaxInt64), true
 		}
 
-		return time.Second * time.Duration(sleep), true
+		return time.Duration(seconds) * time.Second, true
 	}
 
 	retryAt, err := http.ParseTime(value)
@@ -131,34 +123,21 @@ func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
 		return 0, false
 	}
 
-	retryAfter := retryAt.Sub(now)
-	if retryAfter < 0 {
-		return 0, true
-	}
-
-	return retryAfter, true
+	return max(retryAt.Sub(now), 0), true
 }
 
-// LinearJitterBackoff chooses a pseudo-random base delay between minWaitTime and maxWaitTime,
-// then multiplies it by the 1-based attempt number to produce a linearly increasing jittered
-// backoff. When maxWaitTime is not greater than minWaitTime, it falls back to
-// minWaitTime * attemptNum. The resp parameter is unused.
-func LinearJitterBackoff(minWaitTime, maxWaitTime time.Duration, attemptNum int, resp *http.Response) time.Duration {
-	// attemptNum always starts at zero but we want to start at 1 for multiplication
-	attemptNum++
-
-	if maxWaitTime <= minWaitTime {
-		// When there is no valid jitter range, use minWaitTime scaled by the 1-based attempt count.
-		return minWaitTime * time.Duration(attemptNum)
+// LinearJitterBackoff multiplies a random delay in the given range by the
+// 1-based attempt number. Degenerate ranges use the nonnegative minimum.
+func LinearJitterBackoff(minWaitTime, maxWaitTime time.Duration, attemptNum int, _ *http.Response) time.Duration {
+	delay := max(minWaitTime, 0)
+	if maxWaitTime > delay {
+		delay += time.Duration(rand.Int64N(int64(maxWaitTime - delay)))
 	}
 
-	// Seed randVal; doing this every time is fine
-	randVal := rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
+	attempts := uint64(max(attemptNum, 0)) + 1
+	if uint64(delay) > math.MaxInt64/attempts {
+		return time.Duration(math.MaxInt64)
+	}
 
-	// Pick a random base delay in [minWaitTime, maxWaitTime), then scale it by the
-	// 1-based attempt count to get a linearly increasing jittered delay.
-	jitter := randVal.Float64() * float64(maxWaitTime-minWaitTime)
-	jitterMin := int64(jitter) + int64(minWaitTime)
-
-	return time.Duration(jitterMin * int64(attemptNum))
+	return time.Duration(uint64(delay) * attempts)
 }

@@ -1,11 +1,15 @@
 package thttp
 
 import (
+	"bufio"
 	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // Response wraps [http.Response] with helpers to read the body.
@@ -13,8 +17,8 @@ type Response struct {
 	*http.Response
 }
 
-// ToBytes reads and decompresses the response body when Content-Encoding is gzip or deflate,
-// returns the HTTP status code, raw body bytes, and any read or decompression error.
+// ToBytes reads and closes the response body. It decodes supported encodings
+// in reverse order and returns the raw body if any encoding is unsupported.
 func (p *Response) ToBytes() (int, []byte, error) {
 	if p == nil || p.Response == nil {
 		return 0, nil, errors.New("thttp: response object is unavailable")
@@ -28,23 +32,29 @@ func (p *Response) ToBytes() (int, []byte, error) {
 
 	defer p.Body.Close()
 
-	var reader io.ReadCloser
-	var err error
-
-	switch p.Header.Get("Content-Encoding") {
-	case "gzip":
-		reader, err = gzip.NewReader(p.Body)
-		if err != nil {
-			return statusCode, nil, err
-		}
-	case "deflate":
-		reader = flate.NewReader(p.Body)
-	default:
-		reader = p.Body
+	if p.Body == http.NoBody || statusCode == http.StatusNoContent || statusCode == http.StatusNotModified ||
+		(p.Request != nil && p.Request.Method == http.MethodHead) {
+		return statusCode, []byte{}, nil
 	}
 
-	if reader != p.Body {
-		defer reader.Close()
+	var reader io.Reader = p.Body
+	encodings := responseEncodings(p.Header)
+	for index := len(encodings) - 1; index >= 0; index-- {
+		encoding := encodings[index]
+		var decoder io.ReadCloser
+		var err error
+		switch encoding {
+		case "gzip":
+			decoder, err = gzip.NewReader(reader)
+		case "deflate":
+			decoder, err = deflateReader(reader)
+		}
+		if err != nil {
+			return statusCode, nil, fmt.Errorf("thttp: decode %s response body: %w", encoding, err)
+		}
+
+		defer decoder.Close()
+		reader = decoder
 	}
 
 	body, err := io.ReadAll(reader)
@@ -55,7 +65,39 @@ func (p *Response) ToBytes() (int, []byte, error) {
 	return statusCode, body, nil
 }
 
-// ToString returns the response body as a UTF-8 string via [Response.ToBytes].
+// responseEncodings collects codings in application order. An unsupported
+// coding leaves the whole representation available in its original form.
+func responseEncodings(headerMap http.Header) []string {
+	var encodings []string
+	for _, value := range headerMap.Values("Content-Encoding") {
+		for part := range strings.SplitSeq(value, ",") {
+			encoding := strings.ToLower(strings.TrimSpace(part))
+			switch encoding {
+			case "gzip", "deflate":
+				encodings = append(encodings, encoding)
+			case "", "identity":
+			default:
+				return nil
+			}
+		}
+	}
+
+	return encodings
+}
+
+// deflateReader supports the standard zlib wrapper and legacy raw deflate.
+func deflateReader(body io.Reader) (io.ReadCloser, error) {
+	reader := bufio.NewReader(body)
+	header, err := reader.Peek(2)
+	if err == nil && header[0]&0x0f == 8 && header[0]>>4 <= 7 &&
+		(uint16(header[0])<<8|uint16(header[1]))%31 == 0 {
+		return zlib.NewReader(reader)
+	}
+
+	return flate.NewReader(reader), nil
+}
+
+// ToString reads and closes the response body via [Response.ToBytes].
 func (p *Response) ToString() (int, string, error) {
 	statusCode, bytes, err := p.ToBytes()
 	if err != nil {

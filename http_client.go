@@ -8,18 +8,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
-	"net/http/httputil"
-	_url "net/url"
+	neturl "net/url"
+	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/choveylee/tlog"
+	"golang.org/x/net/publicsuffix"
 )
 
 // Client option keys for [HttpClient.WithOption] and [RequestOption] typed helpers (e.g. [RequestOption.WithTimeout]).
@@ -62,29 +65,36 @@ const (
 	OptExtraResponseHookFunc
 )
 
-// OptTransports lists option keys that update the shared [http.Transport] via [HttpClient.WithOption].
-// Options not in this set are stored and applied when building each [http.Client] in [HttpClient.Do].
-var (
-	OptTransports = map[int]int{
-		OptTransProxyUrl:  OptTransProxyUrl,
-		OptTransProxyFunc: OptTransProxyFunc,
+// A proxy function overrides a static proxy and an explicit unsafe TLS setting
+// overrides the corresponding field of a TLS config in the same batch.
+var transportOptionOrder = [...]int{
+	OptTransProxyUrl,
+	OptTransProxyFunc,
+	OptTransMaxIdleConns,
+	OptTransMaxIdleConnsPerHost,
+	OptTransMaxConnsPerHost,
+	OptTransTlsConfig,
+	OptTransUnsafeTls,
+}
 
-		OptTransMaxIdleConns:        OptTransMaxIdleConns,
-		OptTransMaxIdleConnsPerHost: OptTransMaxIdleConnsPerHost,
-		OptTransMaxConnsPerHost:     OptTransMaxConnsPerHost,
-
-		OptTransUnsafeTls: OptTransUnsafeTls,
-		OptTransTlsConfig: OptTransTlsConfig,
+// OptTransports lists the option keys that configure a client-wide [http.Transport].
+var OptTransports = func() map[int]int {
+	optionMap := make(map[int]int, len(transportOptionOrder))
+	for _, key := range transportOptionOrder {
+		optionMap[key] = key
 	}
-)
+
+	return optionMap
+}()
 
 // newDefaultTransport returns an [http.Transport] with dial timeouts, HTTP/2, and idle connection defaults.
 func newDefaultTransport() *http.Transport {
-	return &http.Transport{
-		DialContext: defaultTransportDialContext(&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}),
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	transport := &http.Transport{
+		DialContext: dialer.DialContext,
 
 		ForceAttemptHTTP2: true,
 
@@ -95,10 +105,12 @@ func newDefaultTransport() *http.Transport {
 
 		ExpectContinueTimeout: 1 * time.Second,
 	}
+
+	return transport
 }
 
 // ProxyFunc is the same type as [http.Transport.Proxy] (alias so values round-trip through [HttpClient.WithOption]).
-type ProxyFunc = func(*http.Request) (*_url.URL, error)
+type ProxyFunc = func(*http.Request) (*neturl.URL, error)
 
 // RedirectPolicyFunc is the same type as [http.Client.CheckRedirect].
 type RedirectPolicyFunc = func(*http.Request, []*http.Request) error
@@ -109,83 +121,29 @@ type RequestHookFunc = func(*http.Client, *http.Request)
 // ResponseHookFunc is called after [http.Client.Do] returns, receiving the response and error from the round trip.
 type ResponseHookFunc = func(*http.Response, error)
 
-// prepareRequest builds an [http.Request] with the given method, URL, body, and default headers.
-// It does not set [http.Request.GetBody]; callers that require retriable bodies must assign it separately.
-func prepareRequest(ctx context.Context, method string, url string, headers map[string]string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+// prepareRequest builds an HTTP request and preserves net/http's built-in
+// GetBody support for byte and string readers.
+func prepareRequest(ctx context.Context, method string, rawURL string, headerMap map[string]string, body io.Reader) (*http.Request, error) {
+	value := reflect.ValueOf(body)
+	if value.Kind() == reflect.Pointer && value.IsNil() {
+		return nil, errors.New("thttp: request body reader must not be nil")
+	}
+
+	request, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
 		return nil, err
 	}
 
-	for key, val := range headers {
-		req.Header.Set(key, val)
+	for headerName, value := range headerMap {
+		request.Header.Set(headerName, value)
 	}
 
-	return req, nil
-}
-
-// snapshotRequestBody reopens and reads the request body for logging when [http.Request.GetBody] is available.
-func snapshotRequestBody(req *http.Request) []byte {
-	if req == nil || req.GetBody == nil {
-		return nil
-	}
-
-	body, err := req.GetBody()
-	if err != nil {
-		return nil
-	}
-
-	defer body.Close()
-
-	data, err := io.ReadAll(body)
-	if err != nil {
-		return nil
-	}
-
-	return data
-}
-
-// dumpDebugRequest builds a request snapshot for debug logging after hooks and cookie resolution.
-// When [http.Request.GetBody] is unavailable, the dump omits the body to avoid consuming the live stream.
-func dumpDebugRequest(req *http.Request, cookieJar http.CookieJar) []byte {
-	if req == nil {
-		return nil
-	}
-
-	debugReq := req.Clone(req.Context())
-	debugReq.Header = req.Header.Clone()
-
-	dumpBody := false
-	if req.Body != nil && req.Body != http.NoBody && req.GetBody != nil {
-		body, err := req.GetBody()
-		if err == nil {
-			debugReq.Body = body
-			defer debugReq.Body.Close()
-			dumpBody = true
-		} else {
-			debugReq.Body = nil
-		}
-	} else {
-		debugReq.Body = nil
-	}
-
-	if cookieJar != nil && debugReq.URL != nil {
-		for _, cookie := range cookieJar.Cookies(debugReq.URL) {
-			debugReq.AddCookie(cookie)
-		}
-	}
-
-	dump, err := httputil.DumpRequestOut(debugReq, dumpBody)
-	if err != nil {
-		return nil
-	}
-
-	return dump
+	return request, nil
 }
 
 type clientSnapshot struct {
-	options map[int]interface{}
-	headers map[string]string
+	optionMap map[int]any
+	headerMap map[string]string
 
 	transport *http.Transport
 
@@ -196,94 +154,81 @@ type clientSnapshot struct {
 	withDebug bool
 }
 
-// defaultTransportDialContext adapts a [net.Dialer] for use as [http.Transport.DialContext].
-func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
-	return dialer.DialContext
-}
-
-// wrapTransport decorates transport with [OptTransLog] first, then [OptTransRetry] (retry is the outermost [http.RoundTripper]).
-// Invalid option value types return errors prefixed with "thttp:" and use "invalid <option> value" wording.
-func wrapTransport(transport http.RoundTripper, options map[int]interface{}) (http.RoundTripper, error) {
-	// add log transport
-	logTransOption := defaultLogTransOption
-
-	srcLogTransOption, ok := options[OptTransLog]
-	if ok == true {
-		destLogTransOption, ok := srcLogTransOption.(*LogTransOption)
-		if ok == true {
-			logTransOption = destLogTransOption
-		} else {
-			return nil, fmt.Errorf("thttp: invalid OptTransLog value: want *LogTransOption, got %T", srcLogTransOption)
+// wrapTransport decorates the base transport with logging and optional retries.
+func wrapTransport(transport http.RoundTripper, optionMap map[int]any) (http.RoundTripper, error) {
+	var logOption *LogTransOption
+	logValue, ok := optionMap[OptTransLog]
+	if ok {
+		logOption, ok = logValue.(*LogTransOption)
+		if !ok {
+			return nil, fmt.Errorf("thttp: invalid OptTransLog value: want *LogTransOption, got %T", logValue)
 		}
 	}
 
-	desTransport := wrapLogTransport(transport, logTransOption)
-
-	// add retry transport
-	srcRetryTransOption, ok := options[OptTransRetry]
-	if ok == true {
-		desRetryTransOption, ok := srcRetryTransOption.(*RetryTransOption)
-		if ok == true {
-			desTransport = wrapRetryTransport(desTransport, desRetryTransOption)
-		} else {
-			return nil, fmt.Errorf("thttp: invalid OptTransRetry value: want *RetryTransOption, got %T", srcRetryTransOption)
+	wrappedTransport := wrapLogTransport(transport, logOption)
+	retryValue, ok := optionMap[OptTransRetry]
+	if ok {
+		retryOption, ok := retryValue.(*RetryTransOption)
+		if !ok {
+			return nil, fmt.Errorf("thttp: invalid OptTransRetry value: want *RetryTransOption, got %T", retryValue)
 		}
+
+		wrappedTransport = wrapRetryTransport(wrappedTransport, retryOption)
 	}
 
-	return desTransport, nil
+	return wrappedTransport, nil
 }
 
-// prepareCookieJar interprets [OptCookieJar]: absent or true reuses defaultJar when available (otherwise allocates a
-// new jar), [http.CookieJar] is used as-is, and false disables cookies for the request. Any other type returns an
-// error using "invalid OptCookieJar value" wording.
-func prepareCookieJar(options map[int]interface{}, defaultJar http.CookieJar) (http.CookieJar, error) {
-	srcOptCookieJar, ok := options[OptCookieJar]
-	if ok == false {
-		if defaultJar != nil {
-			return defaultJar, nil
-		}
+// newCookieJar restricts parent-domain cookies to domains below public suffixes.
+func newCookieJar() (http.CookieJar, error) {
+	return cookiejar.New(&cookiejar.Options{PublicSuffixList: publicsuffix.List})
+}
 
+// prepareCookieJar resolves the per-request jar, including an explicit nil that
+// disables shared cookie storage for that request.
+func prepareCookieJar(optionMap map[int]any, defaultJar http.CookieJar) (http.CookieJar, error) {
+	jarValue, ok := optionMap[OptCookieJar]
+	if !ok {
+		return defaultJar, nil
+	}
+
+	switch jar := jarValue.(type) {
+	case nil:
 		return nil, nil
-	}
-
-	optCookieJar, ok := srcOptCookieJar.(bool)
-	if ok == true {
-		if optCookieJar == false {
+	case bool:
+		if !jar {
 			return nil, nil
 		}
-
 		if defaultJar != nil {
 			return defaultJar, nil
 		}
 
-		jar, err := cookiejar.New(nil)
-		if err != nil {
-			return nil, err
+		return newCookieJar()
+	case http.CookieJar:
+		value := reflect.ValueOf(jar)
+		switch value.Kind() {
+		case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.Slice:
+			if value.IsNil() {
+				return nil, nil
+			}
 		}
 
 		return jar, nil
+	default:
+		return nil, fmt.Errorf("thttp: invalid OptCookieJar value: want bool or http.CookieJar, got %T", jarValue)
 	}
-
-	jar, ok := srcOptCookieJar.(http.CookieJar)
-	if ok == false {
-		return nil, fmt.Errorf("thttp: invalid OptCookieJar value: want bool or http.CookieJar, got %T", srcOptCookieJar)
-	}
-
-	return jar, nil
 }
 
-// prepareRedirect returns the redirect handler from [OptRedirectPolicy] when set, or nil if unset.
-func prepareRedirect(options map[int]interface{}) (func(req *http.Request, via []*http.Request) error, error) {
-	var redirectPolicy func(req *http.Request, via []*http.Request) error
+// prepareRedirect returns the configured redirect handler or net/http's default.
+func prepareRedirect(optionMap map[int]any) (RedirectPolicyFunc, error) {
+	redirectValue, ok := optionMap[OptRedirectPolicy]
+	if !ok {
+		return nil, nil
+	}
 
-	srcRedirectPolicy, ok := options[OptRedirectPolicy]
-	if ok == true {
-		destRedirectPolicy, ok := srcRedirectPolicy.(func(*http.Request, []*http.Request) error)
-		if ok == false {
-			return nil, fmt.Errorf("thttp: invalid OptRedirectPolicy value: want func(*http.Request, []*http.Request) error, got %T", srcRedirectPolicy)
-		}
-
-		redirectPolicy = destRedirectPolicy
+	redirectPolicy, ok := redirectValue.(RedirectPolicyFunc)
+	if !ok {
+		return nil, fmt.Errorf("thttp: invalid OptRedirectPolicy value: want func(*http.Request, []*http.Request) error, got %T", redirectValue)
 	}
 
 	return redirectPolicy, nil
@@ -292,22 +237,19 @@ func prepareRedirect(options map[int]interface{}) (func(req *http.Request, via [
 // HttpClient holds default transport settings, per-client options, and default headers used by [HttpClient.Do]
 // and the HTTP verb helpers.
 type HttpClient struct {
-	// options stores [OptTimeout], hook functions, logging and retry configuration, and other non-transport keys.
-	options map[int]interface{}
+	// optionMap stores [OptTimeout], hook functions, logging and retry configuration, and other non-transport keys.
+	optionMap map[int]any
 
-	// headers holds default header keys (lowercased) merged into every request unless overridden per call.
-	headers map[string]string
+	// headerMap holds default header keys (lowercased) merged into every request unless overridden per call.
+	headerMap map[string]string
 
 	// transport is the base [http.Transport] mutated by transport-related options.
 	transport *http.Transport
 
-	connectTimeout  time.Duration
-	deadlineTimeout time.Duration
-
 	// cookieJar is the optional default jar used when constructing clients if not overridden per request.
 	cookieJar http.CookieJar
 
-	// withDebug enables dumping of the outbound request via [net/http/httputil.DumpRequestOut].
+	// withDebug enables logging of outbound request metadata.
 	withDebug bool
 
 	// transportErr is set when the last [HttpClient.WithOption] or [HttpClient.Defaults] for an [OptTransports] key failed to apply.
@@ -323,19 +265,19 @@ func (p *HttpClient) newClientSnapshot() clientSnapshot {
 	p.RLock()
 	defer p.RUnlock()
 
-	options := make(map[int]interface{}, len(p.options))
-	for key, val := range p.options {
-		options[key] = val
+	optionMap := make(map[int]any, len(p.optionMap))
+	for key, val := range p.optionMap {
+		optionMap[key] = val
 	}
 
-	headers := make(map[string]string, len(p.headers))
-	for key, val := range p.headers {
-		headers[key] = val
+	headerMap := make(map[string]string, len(p.headerMap))
+	for key, val := range p.headerMap {
+		headerMap[key] = val
 	}
 
 	return clientSnapshot{
-		options: options,
-		headers: headers,
+		optionMap: optionMap,
+		headerMap: headerMap,
 
 		transport: p.transport,
 
@@ -350,20 +292,16 @@ func (p *HttpClient) newClientSnapshot() clientSnapshot {
 // NewHttpClient returns an [HttpClient] with a fresh transport, 30-second connect and deadline timeouts,
 // and a default cookie jar when [cookiejar.New] succeeds.
 // A zero [HttpClient] is usable: the first [HttpClient.Do] or [HttpClient.Transport] runs [HttpClient.lazyInitTransport]
-// to initialize the transport and default cookie jar; transport [HttpClient.WithOption] / [HttpClient.Defaults] use
-// [HttpClient.ensureTransportLocked] under [HttpClient.Lock].
+// to initialize the transport and default cookie jar.
 func NewHttpClient() *HttpClient {
 	httpClient := &HttpClient{
-		options: make(map[int]interface{}),
-		headers: make(map[string]string),
+		optionMap: make(map[int]any),
+		headerMap: make(map[string]string),
 
 		transport: newDefaultTransport(),
-
-		connectTimeout:  30 * time.Second,
-		deadlineTimeout: 30 * time.Second,
 	}
 
-	cookieJar, err := cookiejar.New(nil)
+	cookieJar, err := newCookieJar()
 	if err == nil {
 		httpClient.cookieJar = cookieJar
 	}
@@ -373,7 +311,7 @@ func NewHttpClient() *HttpClient {
 
 // cloneOptionValue returns a shallow copy for [*LogTransOption] and [*RetryTransOption] so stored config is not
 // aliased to a template the caller may mutate from another goroutine.
-func cloneOptionValue(key int, val interface{}) interface{} {
+func cloneOptionValue(key int, val any) any {
 	switch key {
 	case OptTransLog:
 		logTransOption, ok := val.(*LogTransOption)
@@ -382,7 +320,7 @@ func cloneOptionValue(key int, val interface{}) interface{} {
 		}
 
 		if logTransOption == nil {
-			return nil
+			return val
 		}
 
 		copied := *logTransOption
@@ -395,7 +333,7 @@ func cloneOptionValue(key int, val interface{}) interface{} {
 		}
 
 		if retryTransOption == nil {
-			return nil
+			return val
 		}
 
 		copied := *retryTransOption
@@ -406,64 +344,18 @@ func cloneOptionValue(key int, val interface{}) interface{} {
 	}
 }
 
-// Defaults merges the provided options and headers into the client defaults. Keys in [OptTransports] are applied
-// to the shared [http.Transport] (and are not stored in the options map), matching [HttpClient.WithOption].
-// [LogTransOption] and [RetryTransOption] values are copied when stored so later mutation of the caller's struct
-// does not affect this client. It is not safe for concurrent use with in-flight requests unless the caller synchronizes access.
-func (p *HttpClient) Defaults(options map[int]interface{}, headers map[string]string) *HttpClient {
+// Defaults merges options and default headers in a single client update.
+func (p *HttpClient) Defaults(optionMap map[int]any, headerMap map[string]string) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
 
-	var transportErr error
-
-	transportChanged := false
-
-	for key, val := range options {
-		_, ok := OptTransports[key]
-		if ok {
-			transportChanged = true
-
-			if p.options != nil {
-				delete(p.options, key)
-			}
-
-			err := p.resetTransport(key, val)
-			if err != nil {
-				transportErr = errors.Join(transportErr, err)
-
-				tlog.E(context.Background()).Err(err).Msgf("thttp transport option update failed: %v", err)
-			}
-
-			continue
-		}
-
-		if p.options == nil {
-			p.options = make(map[int]interface{})
-		}
-
-		p.options[key] = cloneOptionValue(key, val)
-	}
-
-	if len(headers) > 0 {
-		if p.headers == nil {
-			p.headers = make(map[string]string)
-		}
-
-		for key, val := range headers {
-			p.headers[strings.ToLower(key)] = val
-		}
-	}
-
-	if transportErr != nil {
-		p.transportErr = transportErr
-	} else if transportChanged {
-		p.transportErr = nil
-	}
+	p.applyOptionsLocked(optionMap)
+	p.mergeHeadersLocked(headerMap)
 
 	return p
 }
 
-// Debug enables or disables verbose request logging for this client.
+// Debug enables or disables request metadata logging for this client.
 func (p *HttpClient) Debug(val bool) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
@@ -474,7 +366,6 @@ func (p *HttpClient) Debug(val bool) *HttpClient {
 }
 
 // lazyInitTransport allocates [HttpClient.transport] once on first [HttpClient.Do] or [HttpClient.Transport].
-// [HttpClient.WithOption] transport keys use [HttpClient.ensureTransportLocked] instead (caller already holds [HttpClient.Lock]).
 func (p *HttpClient) lazyInitTransport() {
 	p.transportInit.Do(func() {
 		p.Lock()
@@ -485,7 +376,7 @@ func (p *HttpClient) lazyInitTransport() {
 		}
 
 		if p.cookieJar == nil {
-			cookieJar, err := cookiejar.New(nil)
+			cookieJar, err := newCookieJar()
 			if err == nil {
 				p.cookieJar = cookieJar
 			}
@@ -503,152 +394,161 @@ func (p *HttpClient) Transport() http.RoundTripper {
 	return p.transport
 }
 
-// ensureTransportLocked sets [HttpClient.transport] if nil. Caller must hold [HttpClient.Lock].
-func (p *HttpClient) ensureTransportLocked() {
-	if p.transport == nil {
-		p.transport = newDefaultTransport()
+// applyOptionsLocked publishes a new transport only when every transport option
+// in the batch is valid. The caller holds the client lock.
+func (p *HttpClient) applyOptionsLocked(optionMap map[int]any) {
+	for key, value := range optionMap {
+		if slices.Contains(transportOptionOrder[:], key) {
+			continue
+		}
+
+		if p.optionMap == nil {
+			p.optionMap = make(map[int]any)
+		}
+
+		p.optionMap[key] = cloneOptionValue(key, value)
+	}
+
+	var transport *http.Transport
+	var transportErr error
+	for _, key := range transportOptionOrder {
+		value, ok := optionMap[key]
+		if !ok {
+			continue
+		}
+
+		if transport == nil {
+			if p.transport == nil {
+				transport = newDefaultTransport()
+			} else {
+				transport = p.transport.Clone()
+			}
+		}
+
+		if err := configureTransport(transport, key, value); err != nil {
+			transportErr = errors.Join(transportErr, err)
+			tlog.E(context.Background()).Detailf("option: %d", key).Msg("thttp transport option update failed")
+		}
+	}
+
+	if transport == nil {
+		return
+	}
+
+	p.transportErr = transportErr
+	if transportErr == nil {
+		oldTransport := p.transport
+		p.transport = transport
+		if oldTransport != nil {
+			oldTransport.CloseIdleConnections()
+		}
 	}
 }
 
-// resetTransport applies one [OptTransports] option to [HttpClient.transport]. The caller must hold [HttpClient.Lock].
-// It returns an error if val is not assignable to the documented Go type for that option key.
-func (p *HttpClient) resetTransport(key int, val interface{}) error {
-	p.ensureTransportLocked()
-
-	transport := p.transport.Clone()
-
-	if key == OptTransMaxIdleConns {
-		destMaxIdleConns, ok := val.(int)
-		if ok == true {
-			transport.MaxIdleConns = destMaxIdleConns
-			p.transport = transport
-
-			return nil
+// configureTransport applies one option to a privately owned transport.
+func configureTransport(transport *http.Transport, key int, value any) error {
+	switch key {
+	case OptTransMaxIdleConns:
+		count, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("thttp: invalid OptTransMaxIdleConns value: want int, got %T", value)
 		}
 
-		return fmt.Errorf("thttp: invalid OptTransMaxIdleConns value: want int, got %T", val)
-	}
-
-	if key == OptTransMaxIdleConnsPerHost {
-		destMaxIdleConnsPerHost, ok := val.(int)
-		if ok == true {
-			transport.MaxIdleConnsPerHost = destMaxIdleConnsPerHost
-			p.transport = transport
-
-			return nil
+		transport.MaxIdleConns = count
+	case OptTransMaxIdleConnsPerHost:
+		count, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("thttp: invalid OptTransMaxIdleConnsPerHost value: want int, got %T", value)
 		}
 
-		return fmt.Errorf("thttp: invalid OptTransMaxIdleConnsPerHost value: want int, got %T", val)
-	}
-
-	if key == OptTransMaxConnsPerHost {
-		destMaxConnsPerHost, ok := val.(int)
-		if ok == true {
-			transport.MaxConnsPerHost = destMaxConnsPerHost
-			p.transport = transport
-
-			return nil
+		transport.MaxIdleConnsPerHost = count
+	case OptTransMaxConnsPerHost:
+		count, ok := value.(int)
+		if !ok {
+			return fmt.Errorf("thttp: invalid OptTransMaxConnsPerHost value: want int, got %T", value)
 		}
 
-		return fmt.Errorf("thttp: invalid OptTransMaxConnsPerHost value: want int, got %T", val)
-	}
-
-	// proxy
-	if key == OptTransProxyFunc {
-		destProxyFunc, ok := val.(ProxyFunc)
-		if ok == true {
-			transport.Proxy = destProxyFunc
-			p.transport = transport
-
-			return nil
+		transport.MaxConnsPerHost = count
+	case OptTransProxyFunc:
+		proxyFunc, ok := value.(ProxyFunc)
+		if !ok {
+			return fmt.Errorf("thttp: invalid OptTransProxyFunc value: want ProxyFunc (func(*http.Request) (*url.URL, error)), got %T", value)
 		}
 
-		return fmt.Errorf("thttp: invalid OptTransProxyFunc value: want ProxyFunc (func(*http.Request) (*url.URL, error)), got %T", val)
-	} else if key == OptTransProxyUrl {
-		destProxy, ok := val.(string)
-		if ok == true {
-			proxy := destProxy
-
-			if strings.Contains(proxy, "://") == false {
-				proxy = "http://" + proxy
-			}
-
-			proxyUrl, err := _url.Parse(proxy)
-			if err != nil {
-				return err
-			}
-
-			transport.Proxy = http.ProxyURL(proxyUrl)
-			p.transport = transport
-
-			return nil
+		transport.Proxy = proxyFunc
+	case OptTransProxyUrl:
+		rawProxy, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("thttp: invalid OptTransProxyUrl value: want string, got %T", value)
 		}
 
-		return fmt.Errorf("thttp: invalid OptTransProxyUrl value: want string, got %T", val)
-	}
-
-	if key == OptTransUnsafeTls {
-		destUnsafeTls, ok := val.(bool)
-		if ok == true {
-			unsafeTls := destUnsafeTls
-
-			tlsConfig := transport.TLSClientConfig
-
-			if tlsConfig == nil {
-				tlsConfig = &tls.Config{}
-				transport.TLSClientConfig = tlsConfig
-			}
-
-			tlsConfig.InsecureSkipVerify = unsafeTls
-			p.transport = transport
-
-			return nil
+		proxy, err := parseProxyURL(rawProxy)
+		if err != nil {
+			return err
 		}
 
-		return fmt.Errorf("thttp: invalid OptTransUnsafeTls value: want bool, got %T", val)
-	}
-
-	if key == OptTransTlsConfig {
-		destTlsConfig, ok := val.(*tls.Config)
-		if ok == true {
-			transport.TLSClientConfig = destTlsConfig
-			p.transport = transport
-		} else {
-			return fmt.Errorf("thttp: invalid OptTransTlsConfig value: want *tls.Config, got %T", val)
+		transport.Proxy = nil
+		if proxy != nil {
+			transport.Proxy = http.ProxyURL(proxy)
 		}
+	case OptTransTlsConfig:
+		config, ok := value.(*tls.Config)
+		if !ok {
+			return fmt.Errorf("thttp: invalid OptTransTlsConfig value: want *tls.Config, got %T", value)
+		}
+
+		transport.TLSClientConfig = config.Clone()
+	case OptTransUnsafeTls:
+		unsafeTLS, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("thttp: invalid OptTransUnsafeTls value: want bool, got %T", value)
+		}
+
+		if transport.TLSClientConfig == nil {
+			config := &tls.Config{}
+
+			transport.TLSClientConfig = config
+		}
+
+		transport.TLSClientConfig.InsecureSkipVerify = unsafeTLS
 	}
 
 	return nil
 }
 
-// WithOption sets a client-wide option. Keys listed in [OptTransports] update the shared [http.Transport];
-// other keys are stored for use when [HttpClient.Do] builds the [http.Client].
-// [*LogTransOption] and [*RetryTransOption] are shallow-copied when stored so callers can reuse the same template safely.
-// A failed transport update is logged and causes subsequent [HttpClient.Do] calls to return that error until a transport option applies successfully ([HttpClient.Defaults] behaves the same for transport keys).
-func (p *HttpClient) WithOption(key int, val interface{}) *HttpClient {
-	p.Lock()
-	defer p.Unlock()
-
-	_, ok := OptTransports[key]
-	if ok == true {
-		err := p.resetTransport(key, val)
-		if err != nil {
-			p.transportErr = err
-
-			tlog.E(context.Background()).Err(err).Msgf("thttp transport option update failed: %v",
-				err)
-		} else {
-			p.transportErr = nil
-		}
-	} else {
-		if p.options == nil {
-			p.options = make(map[int]interface{})
-		}
-
-		p.options[key] = cloneOptionValue(key, val)
+// parseProxyURL accepts a proxy URL or a host and port. An empty value clears it.
+func parseProxyURL(rawProxy string) (*neturl.URL, error) {
+	if rawProxy == "" {
+		return nil, nil
 	}
 
-	return p
+	if !strings.Contains(rawProxy, "://") {
+		rawProxy = "http://" + rawProxy
+	}
+
+	proxy, err := neturl.Parse(rawProxy)
+	if err != nil {
+		// net/url includes the original input, which may contain credentials.
+		return nil, errors.New("thttp: proxy URL must be valid")
+	}
+
+	switch proxy.Scheme {
+	case "http", "https", "socks5", "socks5h":
+	default:
+		return nil, errors.New("thttp: proxy URL scheme must be http, https, socks5, or socks5h")
+	}
+
+	if proxy.Hostname() == "" {
+		return nil, errors.New("thttp: proxy URL host must be set")
+	}
+
+	return proxy, nil
+}
+
+// WithOption sets a client-wide option. Invalid transport options are returned
+// by [HttpClient.Do] until a successful transport update clears the error.
+func (p *HttpClient) WithOption(key int, value any) *HttpClient {
+	return p.WithOptions(map[int]any{key: value})
 }
 
 // WithTimeout sets the default total timeout for requests made by this client ([OptTimeout]).
@@ -681,7 +581,7 @@ func (p *HttpClient) WithLogTransOption(option *LogTransOption) *HttpClient {
 	return p.WithOption(OptTransLog, option)
 }
 
-// WithCookieJar sets the default [http.CookieJar] for this client ([OptCookieJar]).
+// WithCookieJar sets the default cookie jar. Nil disables stored cookies.
 func (p *HttpClient) WithCookieJar(jar http.CookieJar) *HttpClient {
 	return p.WithOption(OptCookieJar, jar)
 }
@@ -701,59 +601,19 @@ func (p *HttpClient) WithResponseHookFunc(option ResponseHookFunc) *HttpClient {
 	return p.WithOption(OptExtraResponseHookFunc, option)
 }
 
-// WithOptions applies multiple options in sequence.
-func (p *HttpClient) WithOptions(options map[int]interface{}) *HttpClient {
+// WithOptions applies a batch of options without publishing a partial transport.
+func (p *HttpClient) WithOptions(optionMap map[int]any) *HttpClient {
 	p.Lock()
 	defer p.Unlock()
 
-	var transportErr error
-
-	transportChanged := false
-
-	for key, val := range options {
-		_, ok := OptTransports[key]
-		if ok {
-			transportChanged = true
-
-			err := p.resetTransport(key, val)
-			if err != nil {
-				transportErr = errors.Join(transportErr, err)
-
-				tlog.E(context.Background()).Err(err).Msgf("thttp transport option update failed: %v",
-					err)
-			}
-
-			continue
-		}
-
-		if p.options == nil {
-			p.options = make(map[int]interface{})
-		}
-
-		p.options[key] = cloneOptionValue(key, val)
-	}
-
-	if transportErr != nil {
-		p.transportErr = transportErr
-	} else if transportChanged {
-		p.transportErr = nil
-	}
+	p.applyOptionsLocked(optionMap)
 
 	return p
 }
 
-// WithHeader sets a default header for all subsequent requests (key is stored in lowercase).
-func (p *HttpClient) WithHeader(key string, val string) *HttpClient {
-	p.Lock()
-	defer p.Unlock()
-
-	if p.headers == nil {
-		p.headers = make(map[string]string)
-	}
-
-	p.headers[strings.ToLower(key)] = val
-
-	return p
+// WithHeader sets a default header for subsequent requests.
+func (p *HttpClient) WithHeader(key string, value string) *HttpClient {
+	return p.WithHeaders(map[string]string{key: value})
 }
 
 // WithReferer sets the default Referer header.
@@ -771,19 +631,39 @@ func (p *HttpClient) WithContentType(val string) *HttpClient {
 	return p.WithHeader("content-type", val)
 }
 
-// WithHeaders merges multiple default headers.
-func (p *HttpClient) WithHeaders(headers map[string]string) *HttpClient {
-	for key, val := range headers {
-		p.WithHeader(key, val)
-	}
+// WithHeaders merges multiple default headers in a single client update.
+func (p *HttpClient) WithHeaders(headerMap map[string]string) *HttpClient {
+	p.Lock()
+	defer p.Unlock()
+
+	p.mergeHeadersLocked(headerMap)
 
 	return p
 }
 
-// Do executes an HTTP request: it merges client defaults with requestOption, builds an [http.Client] with
-// wrapped transport (logging, then retry), and returns a [Response]. Request bodies are passed through as-is;
-// replay only happens when [http.Request.GetBody] is already available or the retry layer chooses to buffer.
+// mergeHeadersLocked merges case-insensitive headers while the client is locked.
+func (p *HttpClient) mergeHeadersLocked(headerMap map[string]string) {
+	if len(headerMap) == 0 {
+		return
+	}
+
+	if p.headerMap == nil {
+		p.headerMap = make(map[string]string, len(headerMap))
+	}
+
+	for headerName, value := range headerMap {
+		p.headerMap[strings.ToLower(headerName)] = value
+	}
+}
+
+// Do executes a request using a snapshot of client defaults and request options.
+// With retries enabled, body replay requires [http.Request.GetBody].
 func (p *HttpClient) Do(ctx context.Context, method string, url string, requestOption *RequestOption, body io.Reader) (*Response, error) {
+	return p.do(ctx, method, url, requestOption, body, "")
+}
+
+// do applies an optional helper-specific content type only to the current request.
+func (p *HttpClient) do(ctx context.Context, method string, url string, requestOption *RequestOption, body io.Reader, contentType string) (*Response, error) {
 	p.lazyInitTransport()
 
 	snapshot := p.newClientSnapshot()
@@ -791,134 +671,121 @@ func (p *HttpClient) Do(ctx context.Context, method string, url string, requestO
 		return nil, snapshot.transportErr
 	}
 
-	options := snapshot.options
-	headers := snapshot.headers
-	cookies := make([]*http.Cookie, 0)
-
+	optionMap, headerMap := snapshot.optionMap, snapshot.headerMap
+	var cookies []*http.Cookie
 	if requestOption != nil {
 		requestSnapshot := requestOption.snapshot()
-
-		for key, val := range requestSnapshot.options {
-			options[key] = val
-		}
-
-		for key, val := range requestSnapshot.headers {
-			headers[key] = val
-		}
-
+		maps.Copy(optionMap, requestSnapshot.optionMap)
+		maps.Copy(headerMap, requestSnapshot.headerMap)
 		cookies = requestSnapshot.cookies
 	}
 
-	transport, err := wrapTransport(snapshot.transport, options)
+	if contentType != "" {
+		headerMap["content-type"] = contentType
+	}
+
+	transport, err := wrapTransport(snapshot.transport, optionMap)
 	if err != nil {
 		return nil, err
 	}
 
-	cookieJar, err := prepareCookieJar(options, snapshot.cookieJar)
+	cookieJar, err := prepareCookieJar(optionMap, snapshot.cookieJar)
 	if err != nil {
 		return nil, err
 	}
 
-	redirect, err := prepareRedirect(options)
+	redirectPolicy, err := prepareRedirect(optionMap)
 	if err != nil {
 		return nil, err
+	}
+
+	timeout := 30 * time.Second
+	timeoutValue, ok := optionMap[OptTimeout]
+	if ok {
+		timeout, ok = timeoutValue.(time.Duration)
+		if !ok {
+			return nil, fmt.Errorf("thttp: invalid OptTimeout value: want time.Duration, got %T", timeoutValue)
+		}
+	}
+
+	var requestHook RequestHookFunc
+	requestHookValue, ok := optionMap[OptExtraRequestHookFunc]
+	if ok {
+		requestHook, ok = requestHookValue.(RequestHookFunc)
+		if !ok {
+			return nil, fmt.Errorf("thttp: invalid OptExtraRequestHookFunc value: want RequestHookFunc, got %T", requestHookValue)
+		}
+	}
+
+	var responseHook ResponseHookFunc
+	responseHookValue, ok := optionMap[OptExtraResponseHookFunc]
+	if ok {
+		responseHook, ok = responseHookValue.(ResponseHookFunc)
+		if !ok {
+			return nil, fmt.Errorf("thttp: invalid OptExtraResponseHookFunc value: want ResponseHookFunc, got %T", responseHookValue)
+		}
 	}
 
 	client := &http.Client{
 		Transport:     transport,
-		CheckRedirect: redirect,
+		CheckRedirect: redirectPolicy,
 		Jar:           cookieJar,
+		Timeout:       timeout,
 	}
-
-	timeout := time.Second * 30
-
-	srcTimeout, ok := options[OptTimeout]
-	if ok == true {
-		destTimeout, ok := srcTimeout.(time.Duration)
-		if ok == false {
-			return nil, fmt.Errorf("thttp: invalid OptTimeout value: want time.Duration, got %T", srcTimeout)
-		}
-
-		timeout = destTimeout
-	}
-
-	client.Timeout = timeout
-
-	request, err := prepareRequest(ctx, method, url, headers, body)
+	request, err := prepareRequest(ctx, method, url, headerMap, body)
 	if err != nil {
 		return nil, err
 	}
 
-	if cookieJar != nil {
-		cookieJar.SetCookies(request.URL, cookies)
-	} else {
-		for _, cookie := range cookies {
-			request.AddCookie(cookie)
-		}
+	if requestHook != nil {
+		requestHook(client, request)
 	}
 
-	srcRequestHookFunc, ok := options[OptExtraRequestHookFunc]
-	if ok == true {
-		requestHookFunc, ok := srcRequestHookFunc.(RequestHookFunc)
-		if ok == true {
-			requestHookFunc(client, request)
+	if len(cookies) > 0 && request.URL != nil {
+		jar, err := newRequestCookieJar(client.Jar, request, cookies)
+		if err != nil {
+			if request.Body != nil {
+				_ = request.Body.Close()
+			}
+
+			return nil, err
 		}
+
+		client.Jar = jar
 	}
 
-	if snapshot.withDebug == true {
-		dump := dumpDebugRequest(request, cookieJar)
-		if dump != nil {
-			tlog.I(ctx).Msgf("thttp outbound request dump:\n%s", dump)
-		}
+	if snapshot.withDebug {
+		event := withRequestDetails(tlog.I(request.Context()), request, nil)
+		addHeaderNames(event, "req", request.Header)
+		event.Msg("thttp outbound request metadata")
 	}
-
-	isAbnormal := false
 
 	response, err := client.Do(request)
-	if err != nil {
-		isAbnormal = true
-	} else if response != nil && response.StatusCode >= 400 {
-		isAbnormal = true
-	}
-
-	if isAbnormal {
-		event := tlog.W(request.Context()).Err(err).Detailf("req.method: %s", request.Method).
-			Detailf("req.host: %s", request.Host).Detailf("req.url: %s", request.URL.String())
-
-		bodyBytes := snapshotRequestBody(request)
-		if bodyBytes != nil {
-			event = event.Detailf("req.body: %s", string(bodyBytes))
-		}
-
-		for key, vals := range request.Header {
-			event = event.Detailf("req.header.%s: %s", key, strings.Join(vals, ";"))
-		}
-
+	if err != nil || (response != nil && response.StatusCode >= http.StatusBadRequest) {
+		event := withRequestDetails(tlog.W(request.Context()), request, err)
 		if response != nil {
-			event = event.Detailf("resp.status code: %d", response.StatusCode)
+			event.Detailf("resp.status code: %d", response.StatusCode)
 		}
 
 		event.Msg("thttp request failed or returned HTTP status >= 400")
 	}
 
-	srcResponseHookFunc, ok := options[OptExtraResponseHookFunc]
-	if ok == true {
-		responseHookFunc, ok := srcResponseHookFunc.(ResponseHookFunc)
-		if ok == true {
-			responseHookFunc(response, err)
-		}
+	if responseHook != nil {
+		responseHook(response, err)
 	}
 
 	if response == nil {
 		return nil, err
 	}
 
-	return &Response{response}, err
+	responseData := &Response{Response: response}
+
+	return responseData, err
 }
 
 // send converts params to an [io.Reader] for the given verb helpers and calls [HttpClient.Do].
 // Supported types for params are listed in the error returned from the default branch.
-func (p *HttpClient) send(ctx context.Context, method string, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
+func (p *HttpClient) send(ctx context.Context, method string, url string, requestOption *RequestOption, params any) (*Response, error) {
 	var body io.Reader
 
 	switch retParams := params.(type) {
@@ -930,7 +797,7 @@ func (p *HttpClient) send(ctx context.Context, method string, url string, reques
 		body = strings.NewReader(retParams)
 	case *bytes.Reader:
 		body = retParams
-	case _url.Values:
+	case neturl.Values:
 		body = strings.NewReader(retParams.Encode())
 	default:
 		return nil, fmt.Errorf("thttp: unsupported request body type %T; supported types: nil, []byte, string, *bytes.Reader, url.Values", retParams)
@@ -940,13 +807,7 @@ func (p *HttpClient) send(ctx context.Context, method string, url string, reques
 }
 
 // sendJson serializes params to JSON when needed and sets Content-Type to [ContentTypeApplicationJson].
-func (p *HttpClient) sendJson(ctx context.Context, method string, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
-	if requestOption == nil {
-		requestOption = NewRequestOption()
-	}
-
-	requestOption.WithContentType(ContentTypeApplicationJson)
-
+func (p *HttpClient) sendJson(ctx context.Context, method string, url string, requestOption *RequestOption, params any) (*Response, error) {
 	var body io.Reader
 
 	switch retParams := params.(type) {
@@ -967,26 +828,26 @@ func (p *HttpClient) sendJson(ctx context.Context, method string, url string, re
 		body = bytes.NewReader(data)
 	}
 
-	return p.Do(ctx, method, url, requestOption, body)
+	return p.do(ctx, method, url, requestOption, body, ContentTypeApplicationJson)
 }
 
 // Head sends an HTTP HEAD request.
 func (p *HttpClient) Head(ctx context.Context, url string, requestOption *RequestOption) (*Response, error) {
-	return p.Do(ctx, "HEAD", url, requestOption, nil)
+	return p.Do(ctx, http.MethodHead, url, requestOption, nil)
 }
 
 // Get sends an HTTP GET request, appending params as the query string.
-func (p *HttpClient) Get(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+func (p *HttpClient) Get(ctx context.Context, url string, requestOption *RequestOption, params neturl.Values) (*Response, error) {
 	url = appendParams(url, params)
 
-	return p.Do(ctx, "GET", url, requestOption, nil)
+	return p.Do(ctx, http.MethodGet, url, requestOption, nil)
 }
 
 // GetLen performs a HEAD request and returns the Content-Length value when present and parseable.
-func (p *HttpClient) GetLen(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (int64, error) {
+func (p *HttpClient) GetLen(ctx context.Context, url string, requestOption *RequestOption, params neturl.Values) (int64, error) {
 	url = appendParams(url, params)
 
-	resp, err := p.Do(ctx, "HEAD", url, requestOption, nil)
+	resp, err := p.Do(ctx, http.MethodHead, url, requestOption, nil)
 	if resp != nil && resp.Response != nil && resp.Body != nil {
 		defer func() { _ = resp.Body.Close() }()
 	}
@@ -1006,59 +867,27 @@ func (p *HttpClient) GetLen(ctx context.Context, url string, requestOption *Requ
 
 // Post sends an HTTP POST request. The body is supplied as a byte slice via [HttpClient.send].
 func (p *HttpClient) Post(ctx context.Context, url string, requestOption *RequestOption, params []byte) (*Response, error) {
-	/*
-		switch retParams := params.(type) {
-		case _url.Values:
-			for key := range retParams {
-				if len(key) > 0 && key[0] == '@' {
-					return p.PostMultipart(ctx, url, retParams)
-				}
-			}
-		}
-	*/
-
-	return p.send(ctx, "POST", url, requestOption, params)
+	return p.send(ctx, http.MethodPost, url, requestOption, params)
 }
 
 // PostJson sends an HTTP POST with a JSON-encoded body (structs and maps are marshaled with [encoding/json.Marshal]).
-func (p *HttpClient) PostJson(ctx context.Context, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
-	return p.sendJson(ctx, "POST", url, requestOption, params)
+func (p *HttpClient) PostJson(ctx context.Context, url string, requestOption *RequestOption, params any) (*Response, error) {
+	return p.sendJson(ctx, http.MethodPost, url, requestOption, params)
 }
 
 // PostMultipart sends multipart/form-data. Field names prefixed with '@' are treated as file paths for upload.
-func (p *HttpClient) PostMultipart(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+func (p *HttpClient) PostMultipart(ctx context.Context, url string, requestOption *RequestOption, params neturl.Values) (*Response, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-
 	for key, values := range params {
 		for _, value := range values {
-			// if value is file
-			if len(key) > 0 && key[0] == '@' {
-				err := loadFormFile(writer, key[1:], value)
-				if err != nil {
-					return nil, err
-				}
-			} else {
-				err := writer.WriteField(key, value)
-				if err != nil {
-					return nil, err
-				}
+			if err := writeMultipartField(writer, key, value); err != nil {
+				return nil, err
 			}
 		}
 	}
 
-	if requestOption == nil {
-		requestOption = NewRequestOption()
-	}
-
-	requestOption.WithContentType(writer.FormDataContentType())
-
-	err := writer.Close()
-	if err != nil {
-		return nil, err
-	}
-
-	return p.Do(ctx, "POST", url, requestOption, body)
+	return p.sendMultipart(ctx, url, requestOption, body, writer)
 }
 
 // FormData is a single multipart field name and value pair.
@@ -1067,88 +896,86 @@ type FormData struct {
 	Value string
 }
 
-// PostMultipartEx sends multipart/form-data using an explicit slice of [FormData] fields.
+// PostMultipartEx sends multipart form data using an explicit slice of [FormData].
 func (p *HttpClient) PostMultipartEx(ctx context.Context, url string, requestOption *RequestOption, params []*FormData) (*Response, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	defer func() { _ = writer.Close() }()
+	for index, formData := range params {
+		if formData == nil {
+			return nil, fmt.Errorf("thttp: multipart field at index %d must not be nil", index)
+		}
 
-	for _, formData := range params {
-		key := formData.Key
-		value := formData.Value
-
-		// if value is file
-		if len(key) > 0 && key[0] == '@' {
-			err := loadFormFile(writer, key[1:], value)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			err := writer.WriteField(key, value)
-			if err != nil {
-				return nil, err
-			}
+		if err := writeMultipartField(writer, formData.Key, formData.Value); err != nil {
+			return nil, err
 		}
 	}
 
-	if requestOption == nil {
-		requestOption = NewRequestOption()
+	return p.sendMultipart(ctx, url, requestOption, body, writer)
+}
+
+// writeMultipartField treats names starting with '@' as file fields.
+func writeMultipartField(writer *multipart.Writer, key string, value string) error {
+	fieldName, isFile := strings.CutPrefix(key, "@")
+	if isFile {
+		return loadFormFile(writer, fieldName, value)
 	}
 
-	requestOption.WithContentType(writer.FormDataContentType())
+	return writer.WriteField(fieldName, value)
+}
 
-	err := writer.Close()
-	if err != nil {
-		return nil, err
+// sendMultipart finishes the body before issuing an HTTP request.
+func (p *HttpClient) sendMultipart(ctx context.Context, url string, requestOption *RequestOption, body *bytes.Buffer, writer *multipart.Writer) (*Response, error) {
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("thttp: finish multipart body: %w", err)
 	}
 
-	return p.Do(ctx, "POST", url, requestOption, body)
+	return p.do(ctx, http.MethodPost, url, requestOption, body, writer.FormDataContentType())
 }
 
 // Put sends an HTTP PUT request with a raw body.
 func (p *HttpClient) Put(ctx context.Context, url string, requestOption *RequestOption, params []byte) (*Response, error) {
-	return p.send(ctx, "PUT", url, requestOption, params)
+	return p.send(ctx, http.MethodPut, url, requestOption, params)
 }
 
 // PutJson sends an HTTP PUT with a JSON-encoded body.
-func (p *HttpClient) PutJson(ctx context.Context, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
-	return p.sendJson(ctx, "PUT", url, requestOption, params)
+func (p *HttpClient) PutJson(ctx context.Context, url string, requestOption *RequestOption, params any) (*Response, error) {
+	return p.sendJson(ctx, http.MethodPut, url, requestOption, params)
 }
 
 // Patch sends an HTTP PATCH request with a raw body.
 func (p *HttpClient) Patch(ctx context.Context, url string, requestOption *RequestOption, params []byte) (*Response, error) {
-	return p.send(ctx, "PATCH", url, requestOption, params)
+	return p.send(ctx, http.MethodPatch, url, requestOption, params)
 }
 
 // PatchJson sends an HTTP PATCH with a JSON-encoded body.
-func (p *HttpClient) PatchJson(ctx context.Context, url string, requestOption *RequestOption, params interface{}) (*Response, error) {
-	return p.sendJson(ctx, "PATCH", url, requestOption, params)
+func (p *HttpClient) PatchJson(ctx context.Context, url string, requestOption *RequestOption, params any) (*Response, error) {
+	return p.sendJson(ctx, http.MethodPatch, url, requestOption, params)
 }
 
 // Delete sends an HTTP DELETE request, appending params as the query string.
-func (p *HttpClient) Delete(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+func (p *HttpClient) Delete(ctx context.Context, url string, requestOption *RequestOption, params neturl.Values) (*Response, error) {
 	url = appendParams(url, params)
 
-	return p.send(ctx, "DELETE", url, requestOption, nil)
+	return p.send(ctx, http.MethodDelete, url, requestOption, nil)
 }
 
 // Options sends an HTTP OPTIONS request.
-func (p *HttpClient) Options(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+func (p *HttpClient) Options(ctx context.Context, url string, requestOption *RequestOption, params neturl.Values) (*Response, error) {
 	url = appendParams(url, params)
 
-	return p.send(ctx, "OPTIONS", url, requestOption, nil)
+	return p.send(ctx, http.MethodOptions, url, requestOption, nil)
 }
 
 // Connect sends an HTTP CONNECT request.
-func (p *HttpClient) Connect(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+func (p *HttpClient) Connect(ctx context.Context, url string, requestOption *RequestOption, params neturl.Values) (*Response, error) {
 	url = appendParams(url, params)
 
-	return p.send(ctx, "CONNECT", url, requestOption, nil)
+	return p.send(ctx, http.MethodConnect, url, requestOption, nil)
 }
 
 // Trace sends an HTTP TRACE request.
-func (p *HttpClient) Trace(ctx context.Context, url string, requestOption *RequestOption, params _url.Values) (*Response, error) {
+func (p *HttpClient) Trace(ctx context.Context, url string, requestOption *RequestOption, params neturl.Values) (*Response, error) {
 	url = appendParams(url, params)
 
-	return p.send(ctx, "TRACE", url, requestOption, nil)
+	return p.send(ctx, http.MethodTrace, url, requestOption, nil)
 }

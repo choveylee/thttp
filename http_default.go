@@ -12,11 +12,11 @@ import (
 var defaultClient = NewHttpClient()
 
 // Defaults merges options and headers into the default client. See [HttpClient.Defaults].
-func Defaults(options map[int]interface{}, headers map[string]string) *HttpClient {
-	return defaultClient.Defaults(options, headers)
+func Defaults(optionMap map[int]interface{}, headerMap map[string]string) *HttpClient {
+	return defaultClient.Defaults(optionMap, headerMap)
 }
 
-// Debug toggles verbose request logging on the default client. See [HttpClient.Debug].
+// Debug toggles request metadata logging on the default client. See [HttpClient.Debug].
 func Debug(val bool) *HttpClient {
 	return defaultClient.Debug(val)
 }
@@ -77,8 +77,8 @@ func WithResponseHookFunc(option ResponseHookFunc) *HttpClient {
 }
 
 // WithOptions applies multiple options to the default client. See [HttpClient.WithOptions].
-func WithOptions(options map[int]interface{}) *HttpClient {
-	return defaultClient.WithOptions(options)
+func WithOptions(optionMap map[int]interface{}) *HttpClient {
+	return defaultClient.WithOptions(optionMap)
 }
 
 // WithHeader sets a default header on the default client. See [HttpClient.WithHeader].
@@ -102,8 +102,8 @@ func WithContentType(val string) *HttpClient {
 }
 
 // WithHeaders merges default headers on the default client. See [HttpClient.WithHeaders].
-func WithHeaders(headers map[string]string) *HttpClient {
-	return defaultClient.WithHeaders(headers)
+func WithHeaders(headerMap map[string]string) *HttpClient {
+	return defaultClient.WithHeaders(headerMap)
 }
 
 // Do issues a request using the default client. See [HttpClient.Do].

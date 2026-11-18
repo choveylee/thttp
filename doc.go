@@ -9,7 +9,7 @@
 // Per-request overrides are expressed with [RequestOption] and merged into each
 // invocation of [HttpClient.Do].
 //
-// Errors returned by this package use the "thttp:" prefix. Configuration and
+// Errors defined by this package use the "thttp:" prefix. Configuration and
 // option type mismatches follow the consistent form "invalid <option> value:
 // want <type>, got <dynamic type>" so that misconfiguration can be identified
 // quickly.

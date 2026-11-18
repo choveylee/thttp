@@ -1,11 +1,12 @@
 package thttp
 
 import (
-	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -19,13 +20,15 @@ const (
 )
 
 // CheckRetryFunc determines whether a failed or unsatisfactory round trip should be retried.
-type CheckRetryFunc func(ctx context.Context, resp *http.Response, err error) (bool, error)
+type CheckRetryFunc func(ctx context.Context, response *http.Response, err error) (bool, error)
 
 // BackoffFunc computes the wait duration before the next retry attempt.
-type BackoffFunc func(minWaitTime, maxWaitTime time.Duration, attemptNum int, resp *http.Response) time.Duration
+type BackoffFunc func(minWaitTime, maxWaitTime time.Duration, attemptNum int, response *http.Response) time.Duration
 
 // RetryErrorFunc optionally transforms the response or error between retry attempts.
-type RetryErrorFunc func(resp *http.Response, err error, retryNum int) (*http.Response, error)
+// When returning a different non-nil body, the hook must close the original or
+// return a wrapper that closes it. The transport closes a body the hook drops.
+type RetryErrorFunc func(response *http.Response, err error, retryNum int) (*http.Response, error)
 
 // RetryTransOption configures the retrying [http.RoundTripper] used when [OptTransRetry] is set.
 type RetryTransOption struct {
@@ -61,9 +64,9 @@ func (p *RetryTransOption) WithMaxCount(maxCount int) *RetryTransOption {
 	return p
 }
 
-// WithWaitTime sets the backoff range; values are applied only when maxWaitTime is not less than minWaitTime.
+// WithWaitTime sets a nonnegative backoff range when maxWaitTime is at least minWaitTime.
 func (p *RetryTransOption) WithWaitTime(minWaitTime, maxWaitTime time.Duration) *RetryTransOption {
-	if maxWaitTime >= minWaitTime {
+	if minWaitTime >= 0 && maxWaitTime >= minWaitTime {
 		p.retryMinWaitTime = minWaitTime
 		p.retryMaxWaitTime = maxWaitTime
 	}
@@ -71,14 +74,14 @@ func (p *RetryTransOption) WithWaitTime(minWaitTime, maxWaitTime time.Duration) 
 	return p
 }
 
-// WithCheckRetry replaces the policy used to decide whether to retry.
+// WithCheckRetry replaces the policy used to decide whether to retry. Nil uses [DefaultRetryPolicy].
 func (p *RetryTransOption) WithCheckRetry(checkRetryFunc CheckRetryFunc) *RetryTransOption {
 	p.checkRetryFunc = checkRetryFunc
 
 	return p
 }
 
-// WithBackoff replaces the backoff computation between attempts.
+// WithBackoff replaces the backoff computation between attempts. Nil uses [DefaultBackoff].
 func (p *RetryTransOption) WithBackoff(backoffFunc BackoffFunc) *RetryTransOption {
 	p.backoffFunc = backoffFunc
 
@@ -102,97 +105,110 @@ var DefaultRetryTransOption = &RetryTransOption{
 	backoffFunc:    DefaultBackoff,
 }
 
-// retryTransport replays request bodies and applies retry and backoff policies around a delegate [http.RoundTripper].
-// When [http.Request.GetBody] is set, each attempt (including the first) obtains a fresh [http.Request.Body] via GetBody
-// so large or streaming payloads are not buffered in memory. Otherwise the body is read once with [io.ReadAll] and replayed from a buffer.
+// retryTransport retries eligible methods whose bodies can be reopened independently.
 type retryTransport struct {
 	transport http.RoundTripper
 
 	retryTransOption *RetryTransOption
 }
 
-// RoundTrip implements [http.RoundTripper].
-func (p *retryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	var response *http.Response
-	var respErr, checkErr error
-	var retry bool
+// RoundTrip leaves each attempt's request and body with its delegate. A retry
+// uses a fresh request so the delegate can finish reading the previous attempt.
+func (p *retryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	ctx := request.Context()
+	option := p.retryTransOption
+	hasBody := request.Body != nil && request.Body != http.NoBody
+	canRetry := isRetryableMethod(request) && (!hasBody || request.GetBody != nil)
+	attemptRequest := request
 
-	attemptNum := 0
-
-	retryTransOption := p.retryTransOption
-
-	reuseBody := false
-
-	if req.GetBody != nil {
-		reuseBody = true
-	}
-
-	var body []byte
-
-	if !reuseBody && req.Body != nil {
-		var err error
-
-		body, err = io.ReadAll(req.Body)
-		_ = req.Body.Close()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	for i := 0; ; i++ {
-		attemptNum++
-
-		if reuseBody {
-			if req.Body != nil {
-				_ = req.Body.Close()
+	for attempt := 0; ; attempt++ {
+		response, err := p.transport.RoundTrip(attemptRequest)
+		retry, policyErr := option.checkRetryFunc(ctx, response, err)
+		if option.retryErrorFunc != nil && (err != nil || retry || policyErr != nil) {
+			var originalBody io.ReadCloser
+			if response != nil {
+				originalBody = response.Body
 			}
 
-			readerCloser, err := req.GetBody()
-			if err != nil {
+			response, err = option.retryErrorFunc(response, err, attempt)
+			// A replacement body can wrap the original, so only close a dropped body here.
+			if originalBody != nil && (response == nil || response.Body == nil) {
+				_ = originalBody.Close()
+			}
+
+			retry, policyErr = option.checkRetryFunc(ctx, response, err)
+		}
+
+		if !retry || !canRetry || attempt+1 >= option.retryMaxCount {
+			if err := errors.Join(err, policyErr); err != nil {
+				closeResponseBody(response)
+
 				return nil, err
 			}
 
-			req.Body = readerCloser
-		} else {
-			req.Body = io.NopCloser(bytes.NewBuffer(body))
-		}
-
-		response, respErr = p.transport.RoundTrip(req)
-
-		retry, checkErr = retryTransOption.checkRetryFunc(req.Context(), response, respErr)
-		if respErr != nil || retry == true || checkErr != nil {
-			if retryTransOption.retryErrorFunc != nil {
-				response, respErr = retryTransOption.retryErrorFunc(response, respErr, i)
-
-				retry, checkErr = retryTransOption.checkRetryFunc(req.Context(), response, respErr)
+			if response == nil {
+				return nil, errors.New("thttp: retry transport returned no response or error")
 			}
+
+			return response, nil
 		}
 
-		if retry == false {
-			break
-		}
-
-		if attemptNum >= retryTransOption.retryMaxCount {
-			break
-		}
-
-		if response != nil && response.Body != nil {
-			_, _ = io.Copy(io.Discard, response.Body)
-			_ = response.Body.Close()
-		}
-
-		waitTime := retryTransOption.backoffFunc(retryTransOption.retryMinWaitTime, retryTransOption.retryMaxWaitTime, i, response)
-
+		waitTime := option.backoffFunc(option.retryMinWaitTime, option.retryMaxWaitTime, attempt, response)
+		closeResponseBody(response)
 		timer := time.NewTimer(waitTime)
 		select {
-		case <-req.Context().Done():
+		case <-ctx.Done():
 			timer.Stop()
-			return nil, req.Context().Err()
+		case <-request.Cancel:
+			timer.Stop()
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
+			return nil, context.Canceled
 		case <-timer.C:
 		}
+
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		attemptRequest = request.Clone(ctx)
+		if hasBody {
+			body, err := request.GetBody()
+			if err != nil {
+				if body != nil {
+					_ = body.Close()
+				}
+
+				return nil, fmt.Errorf("thttp: reopen request body: %w", err)
+			}
+
+			if body == nil {
+				return nil, errors.New("thttp: reopened request body must not be nil")
+			}
+
+			attemptRequest.Body = body
+		}
+	}
+}
+
+// isRetryableMethod permits standard idempotent methods and explicit idempotency keys.
+func isRetryableMethod(request *http.Request) bool {
+	switch request.Method {
+	case http.MethodGet, http.MethodHead, http.MethodPut, http.MethodDelete, http.MethodOptions, http.MethodTrace:
+		return true
 	}
 
-	return response, errors.Join(respErr, checkErr)
+	return strings.TrimSpace(request.Header.Get("Idempotency-Key")) != "" ||
+		strings.TrimSpace(request.Header.Get("X-Idempotency-Key")) != ""
+}
+
+// closeResponseBody releases discarded responses without waiting to drain an arbitrary body.
+func closeResponseBody(response *http.Response) {
+	if response != nil && response.Body != nil {
+		_ = response.Body.Close()
+	}
 }
 
 // wrapRetryTransport returns a retrying decorator around transport, or [http.DefaultTransport] when transport is nil.
@@ -205,9 +221,22 @@ func wrapRetryTransport(transport http.RoundTripper, retryTransOption *RetryTran
 		retryTransOption = DefaultRetryTransOption
 	}
 
+	if retryTransOption == nil {
+		retryTransOption = NewRetryTransOption()
+	}
+
+	option := *retryTransOption
+	if option.checkRetryFunc == nil {
+		option.checkRetryFunc = DefaultRetryPolicy
+	}
+
+	if option.backoffFunc == nil {
+		option.backoffFunc = DefaultBackoff
+	}
+
 	retryTransport := &retryTransport{
 		transport:        transport,
-		retryTransOption: retryTransOption,
+		retryTransOption: &option,
 	}
 
 	return retryTransport

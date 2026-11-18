@@ -3,17 +3,19 @@ package thttp
 import (
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
 // appendParams appends URL-encoded query parameters while preserving any existing query string and fragment.
 func appendParams(rawURL string, params url.Values) string {
-	if len(params) == 0 {
+	encoded := params.Encode()
+	if encoded == "" {
 		return rawURL
 	}
 
@@ -22,13 +24,10 @@ func appendParams(rawURL string, params url.Values) string {
 		return rawURL
 	}
 
-	query := parsedURL.Query()
-	for key, values := range params {
-		for _, value := range values {
-			query.Add(key, value)
-		}
+	if parsedURL.RawQuery != "" {
+		parsedURL.RawQuery += "&"
 	}
-	parsedURL.RawQuery = query.Encode()
+	parsedURL.RawQuery += encoded
 
 	return parsedURL.String()
 }
@@ -52,46 +51,57 @@ func loadFormFile(writer *multipart.Writer, fieldName, fileName string) error {
 	return err
 }
 
-// GetRealIP returns the client IP from X-Real-Ip or the first valid X-Forwarded-For hop, or "127.0.0.1" if none match.
-func GetRealIP(r *http.Request) string {
-	varRealIP := r.Header.Get("X-Real-Ip")
-
-	if len(varRealIP) > 0 {
-		return varRealIP
+// GetRealIP uses proxy-set IP headers and falls back to the remote address.
+// Use it behind a trusted proxy that replaces incoming forwarding headers.
+func GetRealIP(request *http.Request) string {
+	if request == nil {
+		return "127.0.0.1"
 	}
 
-	valForwardedIP := r.Header.Get("X-Forwarded-For")
+	if address, err := netip.ParseAddr(strings.TrimSpace(request.Header.Get("X-Real-IP"))); err == nil {
+		return address.String()
+	}
 
-	if len(valForwardedIP) > 0 {
-		strIPs := strings.Split(valForwardedIP, ",")
-
-		if len(strIPs) > 0 {
-			retReg, err := regexp.MatchString("((?:(?:25[0-5]|2[0-4]\\d|[01]?\\d?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|[01]?\\d?\\d))", strIPs[0])
-			if err == nil && retReg == true {
-				return strIPs[0]
+	for _, value := range request.Header.Values("X-Forwarded-For") {
+		for hop := range strings.SplitSeq(value, ",") {
+			if address, err := netip.ParseAddr(strings.TrimSpace(hop)); err == nil {
+				return address.String()
 			}
 		}
+	}
+
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err != nil {
+		host = request.RemoteAddr
+	}
+	if address, err := netip.ParseAddr(host); err == nil {
+		return address.String()
 	}
 
 	return "127.0.0.1"
 }
 
-// GetRealHost returns the X-Host header when set, otherwise [http.Request.Host].
-func GetRealHost(r *http.Request) string {
-	valHost := r.Header.Get("X-Host")
-
-	if valHost != "" {
-		return valHost
+// GetRealHost uses X-Host from a trusted proxy when present.
+func GetRealHost(request *http.Request) string {
+	if request == nil {
+		return ""
 	}
 
-	return r.Host
+	if host := request.Header.Get("X-Host"); host != "" {
+		return host
+	}
+
+	return request.Host
 }
 
-// GetRealPort returns 443 when X-Scheme is "https", otherwise 80.
-func GetRealPort(r *http.Request) int32 {
-	valXScheme := r.Header.Get("X-Scheme")
+// GetRealPort derives the default port from trusted X-Scheme or direct TLS.
+func GetRealPort(request *http.Request) int32 {
+	if request == nil {
+		return 80
+	}
 
-	if valXScheme == "https" {
+	scheme := strings.TrimSpace(request.Header.Get("X-Scheme"))
+	if strings.EqualFold(scheme, "https") || (scheme == "" && request.TLS != nil) {
 		return 443
 	}
 

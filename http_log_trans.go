@@ -1,9 +1,8 @@
 package thttp
 
 import (
-	"fmt"
 	"net/http"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/choveylee/tlog"
@@ -47,14 +46,14 @@ func (p *LogTransOption) IgnoreNotFound(ignoreNotFound bool) *LogTransOption {
 	return p
 }
 
-// WithAccessLog enables one line per request with method, host, URL, and latency.
+// WithAccessLog enables one log entry per attempt with method, host and latency.
 func (p *LogTransOption) WithAccessLog(enableAccessLog bool) *LogTransOption {
 	p.enableAccessLog = enableAccessLog
 
 	return p
 }
 
-// IncludeHeaders adds request and response headers to access logs when access logging is enabled.
+// IncludeHeaders adds request and response header names to access logs. Values are redacted.
 func (p *LogTransOption) IncludeHeaders(includeHeaders bool) *LogTransOption {
 	p.includeHeaders = includeHeaders
 
@@ -77,67 +76,60 @@ var defaultLogTransOption = &LogTransOption{
 	includeHeaders:  false,
 }
 
-func shouldEmitSlowLog(resp *http.Response, err error, ignoreNotFound bool) bool {
-	if err != nil || resp == nil {
-		return true
-	}
-
-	if ignoreNotFound && resp.StatusCode == http.StatusNotFound {
-		return false
-	}
-
-	return true
-}
-
-// RoundTrip implements [http.RoundTripper].
-func (p *logTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+// RoundTrip measures the time until the response headers or a transport error.
+func (p *logTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	startedAt := time.Now()
-	resp, err := p.transport.RoundTrip(req)
+	response, err := p.transport.RoundTrip(request)
 	latency := time.Since(startedAt)
 
-	if err != nil {
-		httpClientRequestHistogram.Observe(float64(latency)/float64(time.Millisecond), req.Method, fmt.Sprint(-1), req.Host)
-	} else {
-		httpClientRequestHistogram.Observe(float64(latency)/float64(time.Millisecond), req.Method, fmt.Sprint(resp.StatusCode), req.Host)
+	status := "-1"
+	if err == nil && response != nil {
+		status = strconv.Itoa(response.StatusCode)
 	}
 
-	// add slow log
-	if p.logTransOption.enableSlowLog == true &&
-		latency > p.logTransOption.slowLatency &&
-		shouldEmitSlowLog(resp, err, p.logTransOption.ignoreNotFound) {
-		event := tlog.I(req.Context()).Err(err).Detailf("req.method: %s", req.Method).
-			Detailf("req.host: %s", req.Host).Detailf("req.url: %s", req.URL.String()).
-			Detailf("latency_ms: %d", latency.Milliseconds())
+	_ = httpClientRequestHistogram.Observe(float64(latency)/float64(time.Millisecond), request.Method, status, request.Host)
 
-		if resp != nil {
-			event = event.Detailf("resp.status code: %d", resp.StatusCode)
-		}
+	option := p.logTransOption
+	ignoreSlowLog := option.ignoreNotFound && err == nil && response != nil && response.StatusCode == http.StatusNotFound
+	if option.enableSlowLog && latency > option.slowLatency && !ignoreSlowLog {
+		event := withRequestDetails(tlog.I(request.Context()), request, err).
+			Detailf("latency_ms: %d", latency.Milliseconds()).Detailf("resp.status code: %s", status)
 
 		event.Msg("thttp slow request observed")
 	}
 
-	// add access log
-	if p.logTransOption.enableAccessLog == true {
-		event := tlog.I(req.Context()).Err(err).Detailf("req.method: %s", req.Method).
-			Detailf("req.host: %s", req.Host).Detailf("req.url: %s", req.URL.String()).
-			Detailf("latency_ms: %d", latency.Milliseconds())
-
-		if p.logTransOption.includeHeaders == true {
-			for key, vals := range req.Header {
-				event = event.Detailf("req.header.%s: %s", key, strings.Join(vals, ";"))
-			}
-
-			if resp != nil {
-				for key, vals := range resp.Header {
-					event = event.Detailf("resp.header.%s: %s", key, strings.Join(vals, ";"))
-				}
+	if option.enableAccessLog {
+		event := withRequestDetails(tlog.I(request.Context()), request, err).
+			Detailf("latency_ms: %d", latency.Milliseconds()).Detailf("resp.status code: %s", status)
+		if option.includeHeaders {
+			addHeaderNames(event, "req", request.Header)
+			if response != nil {
+				addHeaderNames(event, "resp", response.Header)
 			}
 		}
 
 		event.Msg("thttp request access log entry")
 	}
 
-	return resp, err
+	return response, err
+}
+
+// withRequestDetails omits URL paths, credentials and error text, which may
+// contain request data or URLs from redirects and proxies.
+func withRequestDetails(event *tlog.Tevent, request *http.Request, err error) *tlog.Tevent {
+	event.Detailf("req.method: %s", request.Method).Detailf("req.host: %s", request.Host)
+	if err != nil {
+		event.Detailf("error type: %T", err)
+	}
+
+	return event
+}
+
+// addHeaderNames logs header names with a constant redaction marker.
+func addHeaderNames(event *tlog.Tevent, prefix string, headerMap http.Header) {
+	for name := range headerMap {
+		event.Detailf("%s.header.%s: [REDACTED]", prefix, name)
+	}
 }
 
 // wrapLogTransport returns a logging decorator around transport, or [http.DefaultTransport] when transport is nil.

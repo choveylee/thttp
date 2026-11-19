@@ -58,41 +58,41 @@ func NewRetryTransOption() *RetryTransOption {
 }
 
 // WithMaxCount sets the maximum number of total attempts, including the first request.
-func (p *RetryTransOption) WithMaxCount(maxCount int) *RetryTransOption {
-	p.retryMaxCount = maxCount
+func (options *RetryTransOption) WithMaxCount(maxCount int) *RetryTransOption {
+	options.retryMaxCount = maxCount
 
-	return p
+	return options
 }
 
 // WithWaitTime sets a nonnegative backoff range when maxWaitTime is at least minWaitTime.
-func (p *RetryTransOption) WithWaitTime(minWaitTime, maxWaitTime time.Duration) *RetryTransOption {
+func (options *RetryTransOption) WithWaitTime(minWaitTime, maxWaitTime time.Duration) *RetryTransOption {
 	if minWaitTime >= 0 && maxWaitTime >= minWaitTime {
-		p.retryMinWaitTime = minWaitTime
-		p.retryMaxWaitTime = maxWaitTime
+		options.retryMinWaitTime = minWaitTime
+		options.retryMaxWaitTime = maxWaitTime
 	}
 
-	return p
+	return options
 }
 
 // WithCheckRetry replaces the policy used to decide whether to retry. Nil uses [DefaultRetryPolicy].
-func (p *RetryTransOption) WithCheckRetry(checkRetryFunc CheckRetryFunc) *RetryTransOption {
-	p.checkRetryFunc = checkRetryFunc
+func (options *RetryTransOption) WithCheckRetry(checkRetryFunc CheckRetryFunc) *RetryTransOption {
+	options.checkRetryFunc = checkRetryFunc
 
-	return p
+	return options
 }
 
 // WithBackoff replaces the backoff computation between attempts. Nil uses [DefaultBackoff].
-func (p *RetryTransOption) WithBackoff(backoffFunc BackoffFunc) *RetryTransOption {
-	p.backoffFunc = backoffFunc
+func (options *RetryTransOption) WithBackoff(backoffFunc BackoffFunc) *RetryTransOption {
+	options.backoffFunc = backoffFunc
 
-	return p
+	return options
 }
 
 // WithRetryError sets an optional hook invoked to adjust the response or error before re-evaluating retry policy.
-func (p *RetryTransOption) WithRetryError(retryErrorFunc RetryErrorFunc) *RetryTransOption {
-	p.retryErrorFunc = retryErrorFunc
+func (options *RetryTransOption) WithRetryError(retryErrorFunc RetryErrorFunc) *RetryTransOption {
+	options.retryErrorFunc = retryErrorFunc
 
-	return p
+	return options
 }
 
 // DefaultRetryTransOption is a package-level default configuration mirroring [NewRetryTransOption].
@@ -114,15 +114,15 @@ type retryTransport struct {
 
 // RoundTrip leaves each attempt's request and body with its delegate. A retry
 // uses a fresh request so the delegate can finish reading the previous attempt.
-func (p *retryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (transport *retryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	ctx := request.Context()
-	option := p.retryTransOption
+	option := transport.retryTransOption
 	hasBody := request.Body != nil && request.Body != http.NoBody
 	canRetry := isRetryableMethod(request) && (!hasBody || request.GetBody != nil)
 	attemptRequest := request
 
 	for attempt := 0; ; attempt++ {
-		response, err := p.transport.RoundTrip(attemptRequest)
+		response, err := transport.transport.RoundTrip(attemptRequest)
 		retry, policyErr := option.checkRetryFunc(ctx, response, err)
 		if option.retryErrorFunc != nil && (err != nil || retry || policyErr != nil) {
 			var originalBody io.ReadCloser

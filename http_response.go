@@ -19,26 +19,26 @@ type Response struct {
 
 // ToBytes reads and closes the response body. It decodes supported encodings
 // in reverse order and returns the raw body if any encoding is unsupported.
-func (p *Response) ToBytes() (int, []byte, error) {
-	if p == nil || p.Response == nil {
+func (response *Response) ToBytes() (int, []byte, error) {
+	if response == nil || response.Response == nil {
 		return 0, nil, errors.New("thttp: response object is unavailable")
 	}
 
-	statusCode := p.StatusCode
+	statusCode := response.StatusCode
 
-	if p.Body == nil {
+	if response.Body == nil {
 		return statusCode, nil, errors.New("thttp: response body is unavailable")
 	}
 
-	defer p.Body.Close()
+	defer response.Body.Close()
 
-	if p.Body == http.NoBody || statusCode == http.StatusNoContent || statusCode == http.StatusNotModified ||
-		(p.Request != nil && p.Request.Method == http.MethodHead) {
+	if response.Body == http.NoBody || statusCode == http.StatusNoContent || statusCode == http.StatusNotModified ||
+		(response.Request != nil && response.Request.Method == http.MethodHead) {
 		return statusCode, []byte{}, nil
 	}
 
-	var reader io.Reader = p.Body
-	encodings := responseEncodings(p.Header)
+	var reader io.Reader = response.Body
+	encodings := responseEncodings(response.Header)
 	for index := len(encodings) - 1; index >= 0; index-- {
 		encoding := encodings[index]
 		var decoder io.ReadCloser
@@ -49,6 +49,7 @@ func (p *Response) ToBytes() (int, []byte, error) {
 		case "deflate":
 			decoder, err = deflateReader(reader)
 		}
+
 		if err != nil {
 			return statusCode, nil, fmt.Errorf("thttp: decode %s response body: %w", encoding, err)
 		}
@@ -98,8 +99,8 @@ func deflateReader(body io.Reader) (io.ReadCloser, error) {
 }
 
 // ToString reads and closes the response body via [Response.ToBytes].
-func (p *Response) ToString() (int, string, error) {
-	statusCode, bytes, err := p.ToBytes()
+func (response *Response) ToString() (int, string, error) {
+	statusCode, bytes, err := response.ToBytes()
 	if err != nil {
 		return statusCode, "", err
 	}

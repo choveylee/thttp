@@ -32,32 +32,32 @@ func NewLogTransOption() *LogTransOption {
 
 // WithSlowLog enables or disables logging when round-trip latency exceeds slowLatency. Slow responses of any
 // HTTP status are eligible; [LogTransOption.IgnoreNotFound] can be used to suppress slow HTTP 404 logs.
-func (p *LogTransOption) WithSlowLog(enableSlowLog bool, slowLatency time.Duration) *LogTransOption {
-	p.enableSlowLog = enableSlowLog
-	p.slowLatency = slowLatency
+func (options *LogTransOption) WithSlowLog(enableSlowLog bool, slowLatency time.Duration) *LogTransOption {
+	options.enableSlowLog = enableSlowLog
+	options.slowLatency = slowLatency
 
-	return p
+	return options
 }
 
 // IgnoreNotFound controls whether slow HTTP 404 responses are excluded from slow-log eligibility.
-func (p *LogTransOption) IgnoreNotFound(ignoreNotFound bool) *LogTransOption {
-	p.ignoreNotFound = ignoreNotFound
+func (options *LogTransOption) IgnoreNotFound(ignoreNotFound bool) *LogTransOption {
+	options.ignoreNotFound = ignoreNotFound
 
-	return p
+	return options
 }
 
 // WithAccessLog enables one log entry per attempt with method, host and latency.
-func (p *LogTransOption) WithAccessLog(enableAccessLog bool) *LogTransOption {
-	p.enableAccessLog = enableAccessLog
+func (options *LogTransOption) WithAccessLog(enableAccessLog bool) *LogTransOption {
+	options.enableAccessLog = enableAccessLog
 
-	return p
+	return options
 }
 
 // IncludeHeaders adds request and response header names to access logs. Values are redacted.
-func (p *LogTransOption) IncludeHeaders(includeHeaders bool) *LogTransOption {
-	p.includeHeaders = includeHeaders
+func (options *LogTransOption) IncludeHeaders(includeHeaders bool) *LogTransOption {
+	options.includeHeaders = includeHeaders
 
-	return p
+	return options
 }
 
 // logTransport records latency histograms and optional structured logs around a delegate [http.RoundTripper].
@@ -77,9 +77,9 @@ var defaultLogTransOption = &LogTransOption{
 }
 
 // RoundTrip measures the time until the response headers or a transport error.
-func (p *logTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+func (transport *logTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	startedAt := time.Now()
-	response, err := p.transport.RoundTrip(request)
+	response, err := transport.transport.RoundTrip(request)
 	latency := time.Since(startedAt)
 
 	status := "-1"
@@ -89,7 +89,7 @@ func (p *logTransport) RoundTrip(request *http.Request) (*http.Response, error) 
 
 	_ = httpClientRequestHistogram.Observe(float64(latency)/float64(time.Millisecond), request.Method, status, request.Host)
 
-	option := p.logTransOption
+	option := transport.logTransOption
 	ignoreSlowLog := option.ignoreNotFound && err == nil && response != nil && response.StatusCode == http.StatusNotFound
 	if option.enableSlowLog && latency > option.slowLatency && !ignoreSlowLog {
 		event := withRequestDetails(tlog.I(request.Context()), request, err).

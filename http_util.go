@@ -27,6 +27,7 @@ func appendParams(rawURL string, params url.Values) string {
 	if parsedURL.RawQuery != "" {
 		parsedURL.RawQuery += "&"
 	}
+
 	parsedURL.RawQuery += encoded
 
 	return parsedURL.String()
@@ -74,6 +75,7 @@ func GetRealIP(request *http.Request) string {
 	if err != nil {
 		host = request.RemoteAddr
 	}
+
 	if address, err := netip.ParseAddr(host); err == nil {
 		return address.String()
 	}

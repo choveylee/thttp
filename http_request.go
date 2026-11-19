@@ -44,121 +44,121 @@ func NewRequestOption() *RequestOption {
 }
 
 // snapshot copies the options used by one request under the options lock.
-func (p *RequestOption) snapshot() requestOptionSnapshot {
-	p.Lock()
-	defer p.Unlock()
+func (options *RequestOption) snapshot() requestOptionSnapshot {
+	options.Lock()
+	defer options.Unlock()
 
-	optionMap := maps.Clone(p.optionMap)
-	headerMap := make(map[string]string, len(p.Headers))
-	for headerName, value := range p.Headers {
+	optionMap := maps.Clone(options.optionMap)
+	headerMap := make(map[string]string, len(options.Headers))
+	for headerName, value := range options.Headers {
 		headerMap[strings.ToLower(headerName)] = value
 	}
 
 	snapshot := requestOptionSnapshot{
 		optionMap: optionMap,
 		headerMap: headerMap,
-		cookies:   slices.Clone(p.Cookies),
+		cookies:   slices.Clone(options.Cookies),
 	}
 
 	return snapshot
 }
 
 // setOption stores a typed per-request option under the options lock.
-func (p *RequestOption) setOption(key int, value any) *RequestOption {
-	p.Lock()
-	defer p.Unlock()
+func (options *RequestOption) setOption(key int, value any) *RequestOption {
+	options.Lock()
+	defer options.Unlock()
 
-	if p.optionMap == nil {
-		p.optionMap = make(map[int]any)
+	if options.optionMap == nil {
+		options.optionMap = make(map[int]any)
 	}
 
-	p.optionMap[key] = cloneOptionValue(key, value)
+	options.optionMap[key] = cloneOptionValue(key, value)
 
-	return p
+	return options
 }
 
 // WithTimeout sets [OptTimeout] for this request only.
-func (p *RequestOption) WithTimeout(timeout time.Duration) *RequestOption {
-	return p.setOption(OptTimeout, timeout)
+func (options *RequestOption) WithTimeout(timeout time.Duration) *RequestOption {
+	return options.setOption(OptTimeout, timeout)
 }
 
 // WithRetryTransOption attaches retry behavior for this request ([OptTransRetry]).
-func (p *RequestOption) WithRetryTransOption(option *RetryTransOption) *RequestOption {
-	return p.setOption(OptTransRetry, option)
+func (options *RequestOption) WithRetryTransOption(option *RetryTransOption) *RequestOption {
+	return options.setOption(OptTransRetry, option)
 }
 
 // WithLogTransOption attaches logging behavior for this request ([OptTransLog]).
-func (p *RequestOption) WithLogTransOption(option *LogTransOption) *RequestOption {
-	return p.setOption(OptTransLog, option)
+func (options *RequestOption) WithLogTransOption(option *LogTransOption) *RequestOption {
+	return options.setOption(OptTransLog, option)
 }
 
 // WithCookieJar sets the cookie jar for this request. Nil disables stored cookies.
-func (p *RequestOption) WithCookieJar(jar http.CookieJar) *RequestOption {
-	return p.setOption(OptCookieJar, jar)
+func (options *RequestOption) WithCookieJar(jar http.CookieJar) *RequestOption {
+	return options.setOption(OptCookieJar, jar)
 }
 
 // WithRedirectPolicy sets the redirect policy for this request ([OptRedirectPolicy]).
-func (p *RequestOption) WithRedirectPolicy(option RedirectPolicyFunc) *RequestOption {
-	return p.setOption(OptRedirectPolicy, option)
+func (options *RequestOption) WithRedirectPolicy(option RedirectPolicyFunc) *RequestOption {
+	return options.setOption(OptRedirectPolicy, option)
 }
 
 // WithRequestHookFunc registers a pre-request hook for this request ([OptExtraRequestHookFunc]).
-func (p *RequestOption) WithRequestHookFunc(option RequestHookFunc) *RequestOption {
-	return p.setOption(OptExtraRequestHookFunc, option)
+func (options *RequestOption) WithRequestHookFunc(option RequestHookFunc) *RequestOption {
+	return options.setOption(OptExtraRequestHookFunc, option)
 }
 
 // WithResponseHookFunc registers a post-request hook for this request ([OptExtraResponseHookFunc]).
-func (p *RequestOption) WithResponseHookFunc(option ResponseHookFunc) *RequestOption {
-	return p.setOption(OptExtraResponseHookFunc, option)
+func (options *RequestOption) WithResponseHookFunc(option ResponseHookFunc) *RequestOption {
+	return options.setOption(OptExtraResponseHookFunc, option)
 }
 
 // WithHeader sets a header for this request.
-func (p *RequestOption) WithHeader(key string, value string) *RequestOption {
-	return p.WithHeaders(map[string]string{key: value})
+func (options *RequestOption) WithHeader(key string, value string) *RequestOption {
+	return options.WithHeaders(map[string]string{key: value})
 }
 
 // WithReferer sets the Referer header for this request.
-func (p *RequestOption) WithReferer(val string) *RequestOption {
-	return p.WithHeader("referer", val)
+func (options *RequestOption) WithReferer(val string) *RequestOption {
+	return options.WithHeader("referer", val)
 }
 
 // WithUserAgent sets the User-Agent header for this request.
-func (p *RequestOption) WithUserAgent(val string) *RequestOption {
-	return p.WithHeader("user-agent", val)
+func (options *RequestOption) WithUserAgent(val string) *RequestOption {
+	return options.WithHeader("user-agent", val)
 }
 
 // WithContentType sets the Content-Type header for this request.
-func (p *RequestOption) WithContentType(val string) *RequestOption {
-	return p.WithHeader("content-type", val)
+func (options *RequestOption) WithContentType(val string) *RequestOption {
+	return options.WithHeader("content-type", val)
 }
 
 // WithHeaders merges headers for this request under one lock.
-func (p *RequestOption) WithHeaders(headerMap map[string]string) *RequestOption {
-	p.Lock()
-	defer p.Unlock()
+func (options *RequestOption) WithHeaders(headerMap map[string]string) *RequestOption {
+	options.Lock()
+	defer options.Unlock()
 
-	if p.Headers == nil {
-		p.Headers = make(map[string]string, len(headerMap))
+	if options.Headers == nil {
+		options.Headers = make(map[string]string, len(headerMap))
 	}
 
 	for headerName, value := range headerMap {
-		p.Headers[strings.ToLower(headerName)] = value
+		options.Headers[strings.ToLower(headerName)] = value
 	}
 
-	return p
+	return options
 }
 
 // WithCookie appends a scoped cookie for the request.
-func (p *RequestOption) WithCookie(cookie *http.Cookie) *RequestOption {
-	return p.WithCookies(cookie)
+func (options *RequestOption) WithCookie(cookie *http.Cookie) *RequestOption {
+	return options.WithCookies(cookie)
 }
 
 // WithCookies appends scoped cookies for the request.
-func (p *RequestOption) WithCookies(cookies ...*http.Cookie) *RequestOption {
-	p.Lock()
-	defer p.Unlock()
+func (options *RequestOption) WithCookies(cookies ...*http.Cookie) *RequestOption {
+	options.Lock()
+	defer options.Unlock()
 
-	p.Cookies = append(p.Cookies, cookies...)
+	options.Cookies = append(options.Cookies, cookies...)
 
-	return p
+	return options
 }
